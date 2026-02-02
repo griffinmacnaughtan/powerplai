@@ -431,8 +431,8 @@ async def ingest_game_logs(
     return {
         "status": "started",
         "message": f"Game log ingestion started for season {season}",
-        "team_filter": request.team_abbrev,
-        "player_limit": request.limit
+        "team_filter": ingest_request.team_abbrev,
+        "player_limit": ingest_request.limit
     }
 
 

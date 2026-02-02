@@ -34,7 +34,10 @@ RUN pip install --no-cache-dir \
     lxml>=5.0.0 \
     slowapi>=0.1.9
 
-# Heavy ML deps (slow but cached after first build)
+# PyTorch CPU-only (200MB vs 2GB with CUDA)
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+
+# ML deps (sentence-transformers will use the CPU torch we just installed)
 RUN pip install --no-cache-dir sentence-transformers>=2.3.0 chromadb>=0.4.22
 
 # Copy application code

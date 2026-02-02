@@ -220,8 +220,14 @@ class PredictionEngine:
 
         player_id, name, team = row.id, row.name, row.team_abbrev
 
+        # Get matchup context for goalie/pace adjustments
+        home_team = team if is_home else opponent
+        away_team = opponent if is_home else team
+        matchup_context = await self._get_matchup_context(db, home_team, away_team)
+
         return await self._calculate_player_prediction(
-            db, player_id, name, team, opponent, is_home, game_date
+            db, player_id, name, team, opponent, is_home, game_date,
+            matchup_context=matchup_context
         )
 
     async def _get_game_info(

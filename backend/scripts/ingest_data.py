@@ -41,6 +41,8 @@ async def ingest_teams(client: NHLAPIClient, db_session):
         # Get team ID from the logo URL or other field
         # NHL API doesn't directly expose team IDs in standings
         # We'll use a placeholder and update later
+        # Use abbrev as a stable unique identifier for nhl_id
+        team_nhl_id = sum(ord(c) * (i + 1) for i, c in enumerate(team_abbrev))
         await db_session.execute(
             text("""
                 INSERT INTO teams (nhl_id, name, abbrev, conference, division)
@@ -48,10 +50,11 @@ async def ingest_teams(client: NHLAPIClient, db_session):
                 ON CONFLICT (abbrev) DO UPDATE SET
                     name = EXCLUDED.name,
                     conference = EXCLUDED.conference,
-                    division = EXCLUDED.division
+                    division = EXCLUDED.division,
+                    nhl_id = EXCLUDED.nhl_id
             """),
             {
-                "nhl_id": hash(team_abbrev) % 100,  # Placeholder
+                "nhl_id": team_nhl_id,
                 "name": team_name,
                 "abbrev": team_abbrev,
                 "conference": conference,

@@ -94,6 +94,13 @@ class PowerplAICopilot:
                 context_parts.append(f"## Scoring Predictions\n{prediction_context}")
                 sources.append({"type": "prediction", "data": "scoring_predictions"})
 
+        # Check if this is a trade query
+        elif classification.get("is_trade_query") or classification.get("type") == "trade_suggestion":
+            trade_context = await self._fetch_trade_suggestions(db, classification)
+            if trade_context:
+                context_parts.append(f"## Trade Analysis\n{trade_context}")
+                sources.append({"type": "trade", "data": "trade_suggestions"})
+
         # Check if this is an all-teams breakdown query (e.g., "top 3 on each team")
         elif classification.get("is_all_teams_query"):
             stats_requested = classification.get("stats", ["goals"])
@@ -172,15 +179,16 @@ Query: "{query}"
 
 Respond with JSON only:
 {{
-    "type": "stats_lookup" | "comparison" | "trend_analysis" | "explainer" | "prediction" | "leaders" | "team_breakdown" | "matchup_prediction" | "tonight_prediction",
+    "type": "stats_lookup" | "comparison" | "trend_analysis" | "explainer" | "prediction" | "leaders" | "team_breakdown" | "matchup_prediction" | "tonight_prediction" | "trade_suggestion",
     "players": ["player names mentioned"],
     "teams": ["team names or abbreviations - convert full names to abbreviations like TOR, BOS, EDM"],
     "stats": ["specific stats mentioned like goals, xG, corsi"],
-    "timeframe": "current season" | "career" | "specific dates" | "tonight" | "tomorrow" | "monday" | "this week" | null,
+    "timeframe": "current season" | "career" | "tonight" | "tomorrow" | "monday" | "tuesday" | "wednesday" | "thursday" | "friday" | "saturday" | "sunday" | "this week" | "feb 3" | "january 15" | null,
     "is_leaders_query": true if asking about league leaders/top players/who leads in a stat,
     "is_all_teams_query": true if asking about all teams or each team (e.g. "top 3 on each team", "best player per team"),
     "is_prediction_query": true if asking about who will score, predictions, who to start, fantasy advice for tonight/tomorrow/upcoming games,
     "is_tonight_query": true if asking about tonight's games, today's games, tomorrow's games, or upcoming games without specific teams,
+    "is_trade_query": true if asking about trades, trade value, who to trade for, trade targets, or package deals,
     "top_n": number if asking for top N players (e.g. "top 3" = 3, "top 5" = 5)
 }}
 
@@ -190,7 +198,12 @@ Examples:
 - "Predictions for Edmonton vs Calgary" -> type: "matchup_prediction", teams: ["EDM", "CGY"], is_prediction_query: true
 - "Who is going to score in the leafs game tomorrow?" -> type: "matchup_prediction", teams: ["TOR"], is_prediction_query: true, timeframe: "tomorrow"
 - "Best bets for Monday's games" -> type: "tonight_prediction", is_prediction_query: true, is_tonight_query: true, timeframe: "monday"
-- "Who should I start this week?" -> type: "tonight_prediction", is_prediction_query: true"""
+- "Who is most likely to score on Tuesday?" -> type: "tonight_prediction", is_prediction_query: true, is_tonight_query: true, timeframe: "tuesday"
+- "Who will score on Feb 3rd?" -> type: "tonight_prediction", is_prediction_query: true, is_tonight_query: true, timeframe: "feb 3"
+- "Who should I start this week?" -> type: "tonight_prediction", is_prediction_query: true
+- "Who should I trade McDavid for?" -> type: "trade_suggestion", players: ["McDavid"], is_trade_query: true
+- "Trade value for Sherwood and Landeskog" -> type: "trade_suggestion", players: ["Sherwood", "Landeskog"], is_trade_query: true
+- "Package Makar and Rantanen for who?" -> type: "trade_suggestion", players: ["Makar", "Rantanen"], is_trade_query: true"""
                 }
             ],
         )
@@ -310,6 +323,8 @@ Examples:
         # Convert team names to abbreviations
         team_abbrevs = []
         for team in teams:
+            if not team:
+                continue
             team_lower = team.lower()
             # Direct match
             if team_lower in team_mapping:
@@ -337,6 +352,8 @@ Examples:
         sort_column = "points"
         stat_label = "Points"
         for stat in stats:
+            if not stat:
+                continue
             if stat.lower() in stat_mapping:
                 sort_column = stat_mapping[stat.lower()]
                 stat_label = stat.title()
@@ -416,6 +433,8 @@ Examples:
         sort_column = "goals"
         stat_label = "Goals"
         for stat in stats:
+            if not stat:
+                continue
             if stat.lower() in stat_mapping:
                 sort_column = stat_mapping[stat.lower()]
                 stat_label = stat.title()
@@ -510,6 +529,8 @@ Examples:
         sort_column = "points"  # default
         stat_label = "Points"
         for stat in stats:
+            if not stat:
+                continue
             stat_lower = stat.lower()
             if stat_lower in stat_mapping:
                 sort_column = stat_mapping[stat_lower]
@@ -587,19 +608,44 @@ Examples:
         from datetime import date, timedelta
 
         teams = classification.get("teams", [])
-        timeframe = classification.get("timeframe", "")
-        is_tonight = classification.get("is_tonight_query", False) or timeframe in ("tonight", "tomorrow", "monday", "this week")
+        timeframe = (classification.get("timeframe") or "").lower()
+
+        # Day name to weekday mapping
+        day_names = {
+            "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+            "friday": 4, "saturday": 5, "sunday": 6
+        }
+
+        is_tonight = classification.get("is_tonight_query", False) or timeframe in ("tonight", "tomorrow", "this week") or timeframe in day_names
 
         # Determine the target date based on timeframe
         target_date = date.today()
         if timeframe == "tomorrow":
             target_date = date.today() + timedelta(days=1)
-        elif timeframe == "monday":
-            # Find next Monday
-            days_until_monday = (7 - target_date.weekday()) % 7
-            if days_until_monday == 0:
-                days_until_monday = 7  # If today is Monday, get next Monday
-            target_date = target_date + timedelta(days=days_until_monday)
+        elif timeframe in day_names:
+            # Find next occurrence of that day
+            target_weekday = day_names[timeframe]
+            days_ahead = target_weekday - target_date.weekday()
+            if days_ahead <= 0:  # Target day already happened this week or is today
+                days_ahead += 7
+            target_date = target_date + timedelta(days=days_ahead)
+        else:
+            # Try to parse as a date string (e.g., "Feb 3", "February 3rd", "2026-02-03")
+            import re
+            date_match = re.search(r'(\w+)\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s*(\d{4}))?', timeframe)
+            if date_match:
+                month_str, day_str, year_str = date_match.groups()
+                months = {"jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+                          "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+                          "january": 1, "february": 2, "march": 3, "april": 4, "june": 6,
+                          "july": 7, "august": 8, "september": 9, "october": 10, "november": 11, "december": 12}
+                month = months.get(month_str.lower())
+                if month:
+                    year = int(year_str) if year_str else target_date.year
+                    try:
+                        target_date = date(year, month, int(day_str))
+                    except ValueError:
+                        pass
 
         # If specific teams mentioned, get matchup prediction
         if len(teams) >= 2:
@@ -779,6 +825,118 @@ Examples:
 
         return "\n".join(lines)
 
+    async def _fetch_trade_suggestions(
+        self,
+        db: AsyncSession,
+        classification: dict,
+    ) -> str | None:
+        """Find trade targets based on player values."""
+        players = classification.get("players", [])
+        if not players:
+            return None
+
+        # Get stats for the players being traded
+        player_stats = []
+        total_value = 0.0
+
+        for player_name in players:
+            if not player_name:
+                continue
+            result = await db.execute(
+                text("""
+                    SELECT p.name, p.team_abbrev, p.position,
+                           s.goals, s.assists, s.points, s.games_played,
+                           s.xg, s.corsi_for_pct, s.toi_per_game
+                    FROM players p
+                    JOIN player_season_stats s ON p.id = s.player_id
+                    WHERE LOWER(p.name) LIKE :name
+                    ORDER BY s.season DESC
+                    LIMIT 1
+                """),
+                {"name": f"%{player_name.lower()}%"},
+            )
+            row = result.fetchone()
+            if row:
+                # Calculate fantasy value: goals*3 + assists*2 + xg*2
+                gp = row.games_played or 1
+                ppg = (row.points or 0) / gp
+                xg_per_game = (row.xg or 0) / gp
+                value = ppg * 50 + xg_per_game * 30 + (row.corsi_for_pct or 50) * 0.5
+                player_stats.append({
+                    "name": row.name,
+                    "team": row.team_abbrev,
+                    "position": row.position,
+                    "goals": row.goals,
+                    "assists": row.assists,
+                    "points": row.points,
+                    "games": row.games_played,
+                    "xg": row.xg,
+                    "ppg": round(ppg, 2),
+                    "value": round(value, 1),
+                })
+                total_value += value
+
+        if not player_stats:
+            return None
+
+        # Find comparable players (within 20% of total value)
+        value_min = total_value * 0.8
+        value_max = total_value * 1.2
+
+        # Build exclusion list for SQL
+        exclude_names = [p["name"] for p in player_stats]
+        exclude_placeholders = ", ".join([f":exclude_{i}" for i in range(len(exclude_names))])
+        exclude_params = {f"exclude_{i}": name for i, name in enumerate(exclude_names)}
+
+        result = await db.execute(
+            text(f"""
+                WITH player_values AS (
+                    SELECT p.name, p.team_abbrev, p.position,
+                           s.goals, s.assists, s.points, s.games_played,
+                           s.xg, s.corsi_for_pct,
+                           CASE WHEN s.games_played > 0 THEN
+                               (s.points::float / s.games_played) * 50 +
+                               (COALESCE(s.xg, 0)::float / s.games_played) * 30 +
+                               COALESCE(s.corsi_for_pct, 50) * 0.5
+                           ELSE 0 END as value
+                    FROM players p
+                    JOIN player_season_stats s ON p.id = s.player_id
+                    WHERE s.season = (SELECT MAX(season) FROM player_season_stats)
+                    AND s.games_played >= 20
+                )
+                SELECT name, team_abbrev, position, goals, assists, points, games_played, xg, value
+                FROM player_values
+                WHERE value BETWEEN :min_val AND :max_val
+                AND name NOT IN ({exclude_placeholders})
+                ORDER BY value DESC
+                LIMIT 10
+            """),
+            {"min_val": value_min, "max_val": value_max, **exclude_params},
+        )
+        targets = result.fetchall()
+
+        # Build response
+        lines = ["**Players Being Traded:**"]
+        for p in player_stats:
+            xg = p['xg'] or 0
+            lines.append(f"- {p['name']} ({p['team']}, {p['position']}): {p['points']} pts in {p['games']} GP ({p['ppg']} PPG), {xg:.1f} xG — Value: {p['value']}")
+
+        lines.append(f"\n**Combined Trade Value:** {total_value:.1f}")
+        lines.append(f"\n**Comparable Trade Targets** (value range {value_min:.1f} - {value_max:.1f}):")
+
+        if targets:
+            for t in targets:
+                gp = t.games_played or 1
+                ppg = round((t.points or 0) / gp, 2)
+                xg = t.xg or 0
+                lines.append(f"- {t.name} ({t.team_abbrev}, {t.position}): {t.points} pts ({ppg} PPG), {xg:.1f} xG — Value: {t.value:.1f}")
+        else:
+            lines.append("No comparable players found in the current season stats.")
+
+        lines.append("\n**Trade Recommendation:** Target players with similar or slightly higher value scores. Higher xG suggests a player may be due for positive regression.")
+
+        return "\n".join(lines)
+
     def _normalize_teams(self, teams: list[str]) -> list[str]:
         """Convert team names to abbreviations."""
         team_mapping = {
@@ -819,6 +977,8 @@ Examples:
 
         result = []
         for team in teams:
+            if not team:
+                continue
             team_lower = team.lower().strip()
             if team_lower in team_mapping:
                 result.append(team_mapping[team_lower])
