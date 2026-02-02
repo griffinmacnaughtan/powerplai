@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl:*)",
+      "Bash(docker info:*)",
+      "Bash(docker-compose up:*)",
+      "Bash(docker exec:*)",
+      "Bash(docker-compose restart:*)",
+      "Bash(python:*)",
+      "Bash(docker logs:*)",
+      "Bash(docker-compose logs:*)",
+      "Bash(docker-compose build:*)",
+      "Bash(docker ps:*)",
+      "Bash(docker-compose stop:*)",
+      "Bash(docker-compose rm:*)",
+      "Bash(docker-compose exec:*)"
+    ]
+  }
+}
