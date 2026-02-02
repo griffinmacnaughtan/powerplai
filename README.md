@@ -1,17 +1,16 @@
 # PowerplAI
 
-A hockey analytics copilot that combines structured stats with RAG to answer natural language questions about the NHL. Think ChatGPT for hockey nerds, but grounded in real data.
+A hockey analytics copilot that combines structured stats with RAG to answer natural language questions about the NHL. 
 
-Ask "Who should I start tonight?" and get probability-weighted predictions. Ask "Compare McDavid to Crosby" and get per-game normalized stats with context. Ask "What is expected goals?" and get an explanation pulled from indexed hockey analytics articles.
+Ask "Who should I start tonight?" and get probability-weighted predictions. Ask "Compare McDavid and Mackinnon" and get per-game normalized stats with context. Ask "What is expected goals?" and get an explanation pulled from indexed hockey analytics articles.
 
 ## Why I Built This
 
 Most fantasy hockey tools are either:
 - Raw stat dumps with no analysis
 - Paywalled "expert" picks with no methodology
-- Pure vibes-based
 
-I wanted something that could explain *why* a player might pop off tonight, backed by actual data—recent form, goalie matchups, team pace, head-to-head history. And I wanted to ask questions in plain English.
+I wanted something that could explain *why* a player might do well in a given situation, backed by actual data—recent form, goalie matchups, team pace, head-to-head history. And I wanted to ask questions in plain English.
 
 ## What It Actually Does
 

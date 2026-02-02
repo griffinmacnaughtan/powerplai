@@ -39,6 +39,10 @@ ENV/
 # Data (don't commit large files)
 data/raw/*.csv
 data/processed/*.csv
+data/ingestion_progress.json
+
+# Claude Code local settings
+.claude/settings.local.json
 
 # Logs
 *.log
