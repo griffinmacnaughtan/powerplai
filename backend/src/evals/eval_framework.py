@@ -79,9 +79,11 @@ Return JSON only: {{"stats": [{{"player": "name", "stat": "goals", "value": 10}}
         )
 
         try:
+            if not extraction.content or len(extraction.content) == 0:
+                return 0.5, ["Empty response from extraction model"]
             extracted = json.loads(extraction.content[0].text)
             mentioned_stats = extracted.get("stats", [])
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, AttributeError, IndexError):
             return 0.5, ["Could not parse extracted stats"]
 
         # Compare against ground truth
@@ -152,9 +154,12 @@ Return only a JSON object: {{"score": 7, "reason": "brief explanation"}}"""
         )
 
         try:
+            if not judgment.content or len(judgment.content) == 0:
+                return 0.5
             result = json.loads(judgment.content[0].text)
-            return result.get("score", 5) / 10
-        except json.JSONDecodeError:
+            score = result.get("score")
+            return (score if score is not None else 5) / 10
+        except (json.JSONDecodeError, AttributeError, IndexError):
             return 0.5
 
     def citation_accuracy(self, response: str, sources: list[dict]) -> float:

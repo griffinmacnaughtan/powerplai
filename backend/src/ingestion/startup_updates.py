@@ -89,6 +89,44 @@ def set_last_team_stats_update():
     save_progress(progress)
 
 
+def get_last_roster_sync() -> datetime | None:
+    """Get the last time we synced rosters."""
+    progress = load_progress()
+    last_sync_str = progress.get("last_roster_sync")
+    if last_sync_str:
+        try:
+            return datetime.fromisoformat(last_sync_str)
+        except (ValueError, TypeError):
+            pass
+    return None
+
+
+def set_last_roster_sync():
+    """Record that we just synced rosters."""
+    progress = load_progress()
+    progress["last_roster_sync"] = datetime.now().isoformat()
+    save_progress(progress)
+
+
+def get_last_moneypuck_update() -> datetime | None:
+    """Get the last time we updated MoneyPuck stats for current season."""
+    progress = load_progress()
+    last_update_str = progress.get("last_moneypuck_update")
+    if last_update_str:
+        try:
+            return datetime.fromisoformat(last_update_str)
+        except (ValueError, TypeError):
+            pass
+    return None
+
+
+def set_last_moneypuck_update():
+    """Record that we just updated MoneyPuck stats."""
+    progress = load_progress()
+    progress["last_moneypuck_update"] = datetime.now().isoformat()
+    save_progress(progress)
+
+
 async def catchup_game_logs(db: AsyncSession, season: str) -> dict:
     """
     Catch up on missed game logs.
@@ -231,6 +269,137 @@ async def update_team_goalie_stats(db: AsyncSession, season: str) -> dict:
     return stats
 
 
+async def update_moneypuck_stats(db: AsyncSession, season_year: str) -> dict:
+    """
+    Refresh MoneyPuck advanced stats for the current season.
+
+    MoneyPuck updates their data regularly during the season,
+    so we need to re-download to get latest xG, Corsi, etc.
+    """
+    from backend.src.ingestion.moneypuck import download_season_stats, transform_moneypuck_to_schema
+    from pathlib import Path
+
+    # Check if we've updated recently (within last 12 hours)
+    last_update = get_last_moneypuck_update()
+    if last_update:
+        hours_since = (datetime.now() - last_update).total_seconds() / 3600
+        if hours_since < 12:
+            logger.info("moneypuck_recently_updated", hours_ago=round(hours_since, 1))
+            return {"skipped": True, "reason": "recently_updated"}
+
+    logger.info("updating_moneypuck_stats", season=season_year)
+
+    try:
+        # Download latest MoneyPuck data
+        data_path = Path(f"data/raw/moneypuck_{season_year}.csv")
+        df = await download_season_stats(season_year, save_path=data_path)
+        records = transform_moneypuck_to_schema(df)
+
+        season = f"{season_year}{int(season_year) + 1}"
+        updated_count = 0
+
+        for record in records:
+            # Ensure player exists
+            await db.execute(
+                text("""
+                    INSERT INTO players (nhl_id, name, team_abbrev)
+                    VALUES (:nhl_id, :name, :team_abbrev)
+                    ON CONFLICT (nhl_id) DO UPDATE SET
+                        name = EXCLUDED.name,
+                        updated_at = NOW()
+                """),
+                {
+                    "nhl_id": record["nhl_player_id"],
+                    "name": record["player_name"],
+                    "team_abbrev": record["team_abbrev"]
+                },
+            )
+
+            # Get player id
+            result = await db.execute(
+                text("SELECT id FROM players WHERE nhl_id = :nhl_id"),
+                {"nhl_id": record["nhl_player_id"]},
+            )
+            player_row = result.fetchone()
+
+            if player_row:
+                await db.execute(
+                    text("""
+                        INSERT INTO player_season_stats (
+                            player_id, season, team_abbrev, games_played,
+                            goals, assists, points, shots, toi_per_game,
+                            xg, xg_per_60, corsi_for_pct, fenwick_for_pct
+                        ) VALUES (
+                            :player_id, :season, :team_abbrev, :games_played,
+                            :goals, :assists, :points, :shots, :toi_per_game,
+                            :xg, :xg_per_60, :corsi_for_pct, :fenwick_for_pct
+                        )
+                        ON CONFLICT (player_id, season) DO UPDATE SET
+                            team_abbrev = EXCLUDED.team_abbrev,
+                            games_played = EXCLUDED.games_played,
+                            goals = EXCLUDED.goals,
+                            assists = EXCLUDED.assists,
+                            points = EXCLUDED.points,
+                            shots = EXCLUDED.shots,
+                            toi_per_game = EXCLUDED.toi_per_game,
+                            xg = EXCLUDED.xg,
+                            xg_per_60 = EXCLUDED.xg_per_60,
+                            corsi_for_pct = EXCLUDED.corsi_for_pct,
+                            fenwick_for_pct = EXCLUDED.fenwick_for_pct,
+                            updated_at = NOW()
+                    """),
+                    {
+                        "player_id": player_row[0],
+                        "season": season,
+                        "team_abbrev": record["team_abbrev"],
+                        "games_played": record["games_played"],
+                        "goals": record["goals"],
+                        "assists": record["assists"],
+                        "points": record["points"],
+                        "shots": record["shots"],
+                        "toi_per_game": record["toi_per_game"],
+                        "xg": record["xg"],
+                        "xg_per_60": record["xg_per_60"],
+                        "corsi_for_pct": record["corsi_for_pct"],
+                        "fenwick_for_pct": record["fenwick_for_pct"],
+                    },
+                )
+                updated_count += 1
+
+        await db.commit()
+        set_last_moneypuck_update()
+
+        logger.info("moneypuck_stats_updated", count=updated_count)
+        return {"updated": updated_count, "season": season}
+
+    except Exception as e:
+        logger.error("moneypuck_update_failed", error=str(e))
+        return {"error": str(e)}
+
+
+async def update_rosters(db: AsyncSession, season: str) -> dict:
+    """
+    Sync current team rosters from NHL API.
+
+    Updates player team assignments to reflect trades and roster moves.
+    """
+    from backend.src.ingestion.roster_sync import sync_team_rosters
+
+    # Check if we've synced recently (within last 24 hours)
+    last_sync = get_last_roster_sync()
+    if last_sync:
+        hours_since = (datetime.now() - last_sync).total_seconds() / 3600
+        if hours_since < 24:
+            logger.info("rosters_recently_synced", hours_ago=round(hours_since, 1))
+            return {"skipped": True, "reason": "recently_synced"}
+
+    logger.info("syncing_team_rosters", season=season)
+    stats = await sync_team_rosters(db, season)
+
+    set_last_roster_sync()
+    return stats
+
+
 async def refresh_todays_schedule(db: AsyncSession) -> int:
     """Refresh today's game schedule."""
     from backend.src.ingestion.games import ingest_schedule_for_date
@@ -254,17 +423,97 @@ async def run_startup_updates() -> dict:
     """
     results = {
         "schedule": None,
+        "moneypuck": None,
         "game_logs": None,
         "injuries": None,
         "team_stats": None,
+        "rosters": None,
         "errors": [],
     }
 
     season = f"{get_current_season()}{int(get_current_season()) + 1}"
+    season_year = get_current_season()
 
     logger.info("starting_startup_updates", season=season)
 
     async with async_session_maker() as db:
+        # 0. Check if we need to load MoneyPuck stats (fresh deploy)
+        try:
+            stats_check = await db.execute(text("SELECT COUNT(*) FROM player_season_stats"))
+            stats_count = stats_check.scalar()
+            if stats_count == 0 or stats_count < 100:
+                logger.info("loading_moneypuck_stats", reason="fresh_deploy", season=season_year)
+                from backend.src.ingestion.moneypuck import download_season_stats, transform_moneypuck_to_schema
+                from pathlib import Path
+
+                # Download MoneyPuck data
+                data_path = Path(f"data/raw/moneypuck_{season_year}.csv")
+                df = await download_season_stats(season_year, save_path=data_path)
+                records = transform_moneypuck_to_schema(df)
+
+                # Insert players and stats
+                for record in records:
+                    # Ensure player exists
+                    await db.execute(
+                        text("""
+                            INSERT INTO players (nhl_id, name, team_abbrev)
+                            VALUES (:nhl_id, :name, :team_abbrev)
+                            ON CONFLICT (nhl_id) DO UPDATE SET team_abbrev = EXCLUDED.team_abbrev
+                        """),
+                        {"nhl_id": record["nhl_player_id"], "name": record["player_name"], "team_abbrev": record["team_abbrev"]},
+                    )
+                    # Get player id
+                    result = await db.execute(
+                        text("SELECT id FROM players WHERE nhl_id = :nhl_id"),
+                        {"nhl_id": record["nhl_player_id"]},
+                    )
+                    player_row = result.fetchone()
+                    if player_row:
+                        await db.execute(
+                            text("""
+                                INSERT INTO player_season_stats (
+                                    player_id, season, team_abbrev, games_played,
+                                    goals, assists, points, shots, toi_per_game,
+                                    xg, xg_per_60, corsi_for_pct, fenwick_for_pct
+                                ) VALUES (
+                                    :player_id, :season, :team_abbrev, :games_played,
+                                    :goals, :assists, :points, :shots, :toi_per_game,
+                                    :xg, :xg_per_60, :corsi_for_pct, :fenwick_for_pct
+                                )
+                                ON CONFLICT (player_id, season) DO UPDATE SET
+                                    games_played = EXCLUDED.games_played,
+                                    goals = EXCLUDED.goals,
+                                    assists = EXCLUDED.assists,
+                                    points = EXCLUDED.points,
+                                    xg = EXCLUDED.xg,
+                                    corsi_for_pct = EXCLUDED.corsi_for_pct
+                            """),
+                            {
+                                "player_id": player_row[0],
+                                "season": season,
+                                "team_abbrev": record["team_abbrev"],
+                                "games_played": record["games_played"],
+                                "goals": record["goals"],
+                                "assists": record["assists"],
+                                "points": record["points"],
+                                "shots": record["shots"],
+                                "toi_per_game": record["toi_per_game"],
+                                "xg": record["xg"],
+                                "xg_per_60": record["xg_per_60"],
+                                "corsi_for_pct": record["corsi_for_pct"],
+                                "fenwick_for_pct": record["fenwick_for_pct"],
+                            },
+                        )
+                await db.commit()
+                results["moneypuck"] = {"loaded": len(records)}
+                logger.info("moneypuck_stats_loaded", count=len(records))
+            else:
+                results["moneypuck"] = {"skipped": True, "existing_count": stats_count}
+                logger.info("moneypuck_stats_exist", count=stats_count)
+        except Exception as e:
+            logger.error("moneypuck_load_failed", error=str(e))
+            results["errors"].append(f"moneypuck: {str(e)}")
+
         # 1. Refresh today's schedule
         try:
             results["schedule"] = await refresh_todays_schedule(db)
@@ -293,6 +542,20 @@ async def run_startup_updates() -> dict:
             logger.error("team_stats_update_failed", error=str(e))
             results["errors"].append(f"team_stats: {str(e)}")
 
+        # 5. Sync team rosters (updates player team assignments for trades)
+        try:
+            results["rosters"] = await update_rosters(db, season)
+        except Exception as e:
+            logger.error("roster_sync_failed", error=str(e))
+            results["errors"].append(f"rosters: {str(e)}")
+
+        # 6. Refresh MoneyPuck advanced stats for current season (if not recently done)
+        try:
+            results["moneypuck_refresh"] = await update_moneypuck_stats(db, season_year)
+        except Exception as e:
+            logger.error("moneypuck_refresh_failed", error=str(e))
+            results["errors"].append(f"moneypuck_refresh: {str(e)}")
+
     logger.info("startup_updates_complete", results=results)
     return results
 
@@ -308,10 +571,13 @@ async def run_daily_updates() -> dict:
         "game_logs": None,
         "injuries": None,
         "team_stats": None,
+        "rosters": None,
+        "moneypuck": None,
         "errors": [],
     }
 
-    season = f"{get_current_season()}{int(get_current_season()) + 1}"
+    season_year = get_current_season()
+    season = f"{season_year}{int(season_year) + 1}"
 
     logger.info("starting_daily_updates", season=season)
 
@@ -354,6 +620,22 @@ async def run_daily_updates() -> dict:
         except Exception as e:
             logger.error("team_stats_update_failed", error=str(e))
             results["errors"].append(f"team_stats: {str(e)}")
+
+        # Force sync team rosters (catches trades)
+        from backend.src.ingestion.roster_sync import sync_team_rosters
+        try:
+            results["rosters"] = await sync_team_rosters(db, season)
+            set_last_roster_sync()
+        except Exception as e:
+            logger.error("roster_sync_failed", error=str(e))
+            results["errors"].append(f"rosters: {str(e)}")
+
+        # Force refresh MoneyPuck advanced stats for current season
+        try:
+            results["moneypuck"] = await update_moneypuck_stats(db, season_year)
+        except Exception as e:
+            logger.error("moneypuck_update_failed", error=str(e))
+            results["errors"].append(f"moneypuck: {str(e)}")
 
     logger.info("daily_updates_complete", results=results)
     return results

@@ -38,9 +38,9 @@ html {
   outline-offset: 2px;
 }
 
-/* NHL gradient text */
+/* NHL gradient text - blue theme */
 .gradient-text {
-  background: linear-gradient(135deg, #041E42 0%, #C8102E 100%);
+  background: linear-gradient(135deg, #041E42 0%, #5bc0eb 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;

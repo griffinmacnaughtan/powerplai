@@ -1,6 +1,31 @@
 'use client'
 
 import { motion } from 'framer-motion'
+import { useState, useEffect } from 'react'
+
+const HOCKEY_PHRASES = [
+  "Dropping the puck...",
+  "Dropping the gloves...",
+  "Checking the boards...",
+  "Reviewing the tape...",
+  "Pulling the goalie...",
+  "Calling up from the AHL...",
+  "Forechecking the data...",
+  "Backchecking the stats...",
+  "Clearing the zone...",
+  "Going top shelf...",
+  "Sniping the corners...",
+  "Dangling defenders...",
+  "Cycling the zone...",
+  "Screening the goalie...",
+  "Killing the penalty...",
+  "Winning the faceoff...",
+  "Icing the analysis...",
+  "Calculating expected goals...",
+  "Reviewing power play data...",
+  "Scouting the opposition...",
+  "Saucing"
+]
 
 export function LoadingDots() {
   return (
@@ -55,6 +80,19 @@ export function PuckLoader() {
 }
 
 export function TypingIndicator() {
+  const [phraseIndex, setPhraseIndex] = useState(0)
+
+  useEffect(() => {
+    // Pick a random starting phrase
+    setPhraseIndex(Math.floor(Math.random() * HOCKEY_PHRASES.length))
+
+    const interval = setInterval(() => {
+      setPhraseIndex((prev) => (prev + 1) % HOCKEY_PHRASES.length)
+    }, 2000)
+
+    return () => clearInterval(interval)
+  }, [])
+
   return (
     <div className="flex items-center gap-3 text-text-secondary">
       <div className="flex items-center gap-1.5">
@@ -74,7 +112,15 @@ export function TypingIndicator() {
           />
         ))}
       </div>
-      <span className="text-sm font-medium">Analyzing stats...</span>
+      <motion.span
+        key={phraseIndex}
+        initial={{ opacity: 0, y: 5 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0, y: -5 }}
+        className="text-sm font-medium"
+      >
+        {HOCKEY_PHRASES[phraseIndex]}
+      </motion.span>
     </div>
   )
 }

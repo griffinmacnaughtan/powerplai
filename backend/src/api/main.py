@@ -77,7 +77,12 @@ async def lifespan(app: FastAPI):
     # Run startup updates in background (don't block startup)
     # This includes: schedule refresh, game log catch-up, injuries, team/goalie stats
     if settings.auto_update_enabled:
-        asyncio.create_task(run_startup_updates())
+        task = asyncio.create_task(run_startup_updates())
+        # Add callback to log any unhandled exceptions
+        def handle_task_exception(t):
+            if t.exception() is not None:
+                logger.error("startup_updates_task_failed", error=str(t.exception()))
+        task.add_done_callback(handle_task_exception)
 
     yield
     logger.info("shutting_down_powerplai_api")
@@ -125,9 +130,15 @@ app.add_middleware(
 # -------------------------------------------------------------------------
 
 
+class ChatMessage(BaseModel):
+    role: str  # "user" or "assistant"
+    content: str
+
+
 class QueryRequest(BaseModel):
     query: str
     include_rag: bool = True
+    messages: list[ChatMessage] = []  # Conversation history for context
 
 
 class QueryResponse(BaseModel):
@@ -190,10 +201,13 @@ async def query_copilot(
     - "Who are the most underrated defensemen?"
     """
     try:
+        # Convert chat messages to dict format for copilot
+        history = [{"role": m.role, "content": m.content} for m in query_request.messages]
         result = await copilot.query(
             query_request.query,
             db,
             include_rag=query_request.include_rag,
+            conversation_history=history,
         )
         return QueryResponse(**result)
     except Exception as e:
@@ -676,6 +690,71 @@ async def trigger_daily_updates(background_tasks: BackgroundTasks):
 
     background_tasks.add_task(run_daily)
     return {"status": "started", "message": "Daily updates started in background"}
+
+
+@app.post("/api/rosters/sync")
+@limiter.limit("2/hour")
+async def sync_rosters(request: Request, background_tasks: BackgroundTasks):
+    """
+    Sync team rosters from NHL API.
+
+    Updates player team assignments to reflect trades and roster moves.
+    Useful before making predictions to ensure current rosters.
+    """
+    from backend.src.ingestion.roster_sync import sync_team_rosters
+    from backend.src.ingestion.scheduler import get_current_season
+
+    season = f"{get_current_season()}{int(get_current_season()) + 1}"
+
+    async def run_sync():
+        async with async_session_maker() as db:
+            await sync_team_rosters(db, season)
+
+    background_tasks.add_task(run_sync)
+    return {"status": "started", "message": "Roster sync started in background"}
+
+
+@app.post("/api/rosters/sync/{team_abbrev}")
+@limiter.limit("10/hour")
+async def sync_single_team_roster(
+    team_abbrev: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Sync roster for a single team (faster than full sync).
+
+    Useful before a specific game prediction.
+    """
+    from backend.src.ingestion.roster_sync import sync_single_team_roster
+
+    stats = await sync_single_team_roster(db, team_abbrev.upper())
+    return {"status": "complete", "team": team_abbrev.upper(), **stats}
+
+
+@app.post("/api/stats/moneypuck/refresh")
+@limiter.limit("2/hour")
+async def refresh_moneypuck_stats(request: Request, background_tasks: BackgroundTasks):
+    """
+    Refresh MoneyPuck advanced stats (xG, Corsi, etc.) for current season.
+
+    MoneyPuck updates their data regularly during the season.
+    Use this to get the latest advanced metrics.
+    """
+    from backend.src.ingestion.startup_updates import update_moneypuck_stats
+    from backend.src.ingestion.scheduler import get_current_season
+
+    season_year = get_current_season()
+
+    async def run_refresh():
+        async with async_session_maker() as db:
+            await update_moneypuck_stats(db, season_year)
+
+    background_tasks.add_task(run_refresh)
+    return {
+        "status": "started",
+        "message": f"MoneyPuck stats refresh started for {season_year}-{int(season_year)+1} season"
+    }
 
 
 @app.get("/api/games/logs/{player_name}")

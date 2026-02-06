@@ -90,16 +90,34 @@ def transform_moneypuck_to_schema(df: pd.DataFrame) -> list[dict]:
     """
     records = []
 
+    # Filter to only "all" situation rows (full stats, not 5on5/PP/PK splits)
+    if "situation" in df.columns:
+        df = df[df["situation"] == "all"]
+
     for _, row in df.iterrows():
         # MoneyPuck uses playerId which matches NHL API player IDs
         games = row.get("games_played", row.get("GP", 0))
         if pd.isna(games) or games == 0:
             continue
 
-        icetime_total = row.get("icetime", 0)
+        # MoneyPuck icetime can be in seconds (older format) or minutes (newer format)
+        # Try multiple column names
+        icetime_total = row.get("icetime", row.get("iceTime", row.get("TOI", 0)))
         if pd.isna(icetime_total):
             icetime_total = 0
-        toi_per_game = round(icetime_total / games / 60, 2) if games > 0 else 0
+
+        # Calculate TOI per game - detect format based on value magnitude
+        if games > 0 and icetime_total > 0:
+            # If icetime > 10000, it's likely in seconds (e.g., 50000 sec = 833 min)
+            # If icetime < 2000, it's likely already in minutes (e.g., 800 min for season)
+            if icetime_total > 5000:
+                # Seconds format: divide by 60 to get minutes
+                toi_per_game = round(icetime_total / games / 60, 2)
+            else:
+                # Minutes format: don't divide by 60
+                toi_per_game = round(icetime_total / games, 2)
+        else:
+            toi_per_game = 0
 
         # Handle NaN values
         def safe_int(val, default=0):
@@ -130,7 +148,9 @@ def transform_moneypuck_to_schema(df: pd.DataFrame) -> list[dict]:
             # Advanced stats
             "xg": round(safe_float(row.get("I_F_xGoals", 0)), 2),
             "xg_per_60": round(
-                safe_float(row.get("I_F_xGoals", 0)) / (icetime_total / 3600) if icetime_total > 0 else 0,
+                # Calculate per-60 rate: xG / (hours played)
+                # Adjust divisor based on icetime format
+                safe_float(row.get("I_F_xGoals", 0)) / (icetime_total / 3600 if icetime_total > 5000 else icetime_total / 60) if icetime_total > 0 else 0,
                 3
             ),
             "corsi_for_pct": round(corsi_pct, 2),

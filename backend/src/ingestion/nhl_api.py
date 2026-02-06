@@ -129,9 +129,15 @@ class NHLAPIClient:
 
 def parse_player_from_landing(data: dict[str, Any]) -> dict[str, Any]:
     """Transform NHL API player landing response to our schema."""
+    # Safely extract name fields (can be dict with 'default' key or string)
+    first_name_data = data.get("firstName", {})
+    last_name_data = data.get("lastName", {})
+    first_name = first_name_data.get("default", "") if isinstance(first_name_data, dict) else str(first_name_data or "")
+    last_name = last_name_data.get("default", "") if isinstance(last_name_data, dict) else str(last_name_data or "")
+
     return {
         "nhl_id": data.get("playerId"),
-        "name": f"{data.get('firstName', {}).get('default', '')} {data.get('lastName', {}).get('default', '')}".strip(),
+        "name": f"{first_name} {last_name}".strip(),
         "position": data.get("position"),
         "team_abbrev": data.get("currentTeamAbbrev"),
         "birth_date": data.get("birthDate"),

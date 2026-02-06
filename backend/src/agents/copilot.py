@@ -67,6 +67,7 @@ class PowerplAICopilot:
         user_query: str,
         db: AsyncSession,
         include_rag: bool = True,
+        conversation_history: list[dict] | None = None,
     ) -> dict:
         """
         Process a user query and return a response with sources.
@@ -84,6 +85,29 @@ class PowerplAICopilot:
         classification = await self._classify_query(user_query)
         logger.info("query_classified", query=user_query[:50], classification=classification)
 
+        # Check if this is a vague follow-up query (e.g., "tell me more", "what else", "explain")
+        is_followup = self._is_followup_query(user_query)
+        if is_followup and conversation_history:
+            # For follow-up queries, include the last assistant response as context
+            last_assistant_msg = None
+            for msg in reversed(conversation_history):
+                if msg.get("role") == "assistant":
+                    last_assistant_msg = msg.get("content", "")
+                    break
+            if last_assistant_msg:
+                # Add previous response as context so Claude can elaborate
+                sources.append({"type": "conversation", "data": "previous_response"})
+                context_parts = [f"## Previous Response (for follow-up context)\n{last_assistant_msg}"]
+
+                # Generate response with this context
+                context = "\n\n".join(context_parts)
+                response = await self._generate_response(user_query, context, conversation_history)
+                return {
+                    "response": response,
+                    "sources": sources,
+                    "query_type": "followup",
+                }
+
         # Step 2: Fetch relevant data based on query type
         context_parts = []
 
@@ -100,6 +124,13 @@ class PowerplAICopilot:
             if trade_context:
                 context_parts.append(f"## Trade Analysis\n{trade_context}")
                 sources.append({"type": "trade", "data": "trade_suggestions"})
+
+        # Check if this is a value/salary query
+        elif classification.get("is_value_query") or classification.get("type") == "value_comparison":
+            value_context = await self._fetch_value_comparison(db, classification)
+            if value_context:
+                context_parts.append(f"## Value Analysis\n{value_context}")
+                sources.append({"type": "value", "data": "salary_cap"})
 
         # Check if this is an all-teams breakdown query (e.g., "top 3 on each team")
         elif classification.get("is_all_teams_query"):
@@ -157,7 +188,7 @@ class PowerplAICopilot:
         # Step 3: Generate response with Claude
         context = "\n\n".join(context_parts) if context_parts else "No specific data found in database."
 
-        response = await self._generate_response(user_query, context)
+        response = await self._generate_response(user_query, context, conversation_history)
 
         return {
             "response": response,
@@ -179,7 +210,7 @@ Query: "{query}"
 
 Respond with JSON only:
 {{
-    "type": "stats_lookup" | "comparison" | "trend_analysis" | "explainer" | "prediction" | "leaders" | "team_breakdown" | "matchup_prediction" | "tonight_prediction" | "trade_suggestion",
+    "type": "stats_lookup" | "comparison" | "trend_analysis" | "explainer" | "prediction" | "leaders" | "team_breakdown" | "matchup_prediction" | "tonight_prediction" | "trade_suggestion" | "value_comparison",
     "players": ["player names mentioned"],
     "teams": ["team names or abbreviations - convert full names to abbreviations like TOR, BOS, EDM"],
     "stats": ["specific stats mentioned like goals, xG, corsi"],
@@ -189,6 +220,7 @@ Respond with JSON only:
     "is_prediction_query": true if asking about who will score, predictions, who to start, fantasy advice for tonight/tomorrow/upcoming games,
     "is_tonight_query": true if asking about tonight's games, today's games, tomorrow's games, or upcoming games without specific teams,
     "is_trade_query": true if asking about trades, trade value, who to trade for, trade targets, or package deals,
+    "is_value_query": true if asking about value, salary cap, contract, best value, points per dollar, cap hit, or cost efficiency,
     "top_n": number if asking for top N players (e.g. "top 3" = 3, "top 5" = 5)
 }}
 
@@ -203,12 +235,21 @@ Examples:
 - "Who should I start this week?" -> type: "tonight_prediction", is_prediction_query: true
 - "Who should I trade McDavid for?" -> type: "trade_suggestion", players: ["McDavid"], is_trade_query: true
 - "Trade value for Sherwood and Landeskog" -> type: "trade_suggestion", players: ["Sherwood", "Landeskog"], is_trade_query: true
-- "Package Makar and Rantanen for who?" -> type: "trade_suggestion", players: ["Makar", "Rantanen"], is_trade_query: true"""
+- "Package Makar and Rantanen for who?" -> type: "trade_suggestion", players: ["Makar", "Rantanen"], is_trade_query: true
+- "Who is better value, Cuylle or Matthews?" -> type: "value_comparison", players: ["Cuylle", "Matthews"], is_value_query: true
+- "Best value players in the league" -> type: "value_comparison", is_value_query: true, is_leaders_query: true
+- "Points per dollar leaders" -> type: "value_comparison", is_value_query: true, is_leaders_query: true
+- "What's McDavid's cap hit?" -> type: "value_comparison", players: ["McDavid"], is_value_query: true"""
                 }
             ],
         )
 
         try:
+            # Safely access message content
+            if not message.content or len(message.content) == 0:
+                logger.warning("empty_message_content")
+                return {"type": "unknown", "players": [], "teams": [], "stats": []}
+
             text = message.content[0].text
             # Try to extract JSON from markdown code blocks if present
             if "```" in text:
@@ -217,8 +258,15 @@ Examples:
                 if json_match:
                     text = json_match.group(1)
             return json.loads(text)
-        except (json.JSONDecodeError, Exception) as e:
-            logger.warning("classification_parse_error", error=str(e), raw_text=message.content[0].text[:200])
+        except (json.JSONDecodeError, AttributeError, IndexError) as e:
+            # Safely log without re-accessing potentially problematic content
+            raw_preview = ""
+            try:
+                if message.content and len(message.content) > 0:
+                    raw_preview = str(message.content[0].text)[:200]
+            except Exception:
+                raw_preview = "could not extract"
+            logger.warning("classification_parse_error", error=str(e), raw_text=raw_preview)
             return {"type": "unknown", "players": [], "teams": [], "stats": []}
 
     async def _fetch_player_stats(
@@ -240,6 +288,8 @@ Examples:
                     p.name,
                     p.position,
                     p.team_abbrev,
+                    p.birth_date,
+                    p.cap_hit_cents,
                     s.season,
                     s.games_played,
                     s.goals,
@@ -262,12 +312,32 @@ Examples:
             return None
 
         # Format as readable text
+        from datetime import date
         stats_text = []
         for row in rows:
+            # Calculate age if birth_date is available
+            age_str = ""
+            if row.birth_date:
+                today = date.today()
+                age = today.year - row.birth_date.year
+                # Adjust if birthday hasn't occurred this year
+                if (today.month, today.day) < (row.birth_date.month, row.birth_date.day):
+                    age -= 1
+                age_str = f", Age: {age}"
+
+            # Format cap hit if available
+            cap_str = ""
+            if row.cap_hit_cents and row.cap_hit_cents > 0:
+                cap_millions = row.cap_hit_cents / 100_000_000
+                cap_str = f", Cap Hit: ${cap_millions:.2f}M"
+
+            # Format TOI properly (should be in minutes)
+            toi_str = f"{row.toi_per_game:.1f} min" if row.toi_per_game and row.toi_per_game > 0 else "N/A"
+
             stats_text.append(
-                f"**{row.name}** ({row.position}, {row.team_abbrev}) - {row.season or 'Career'}:\n"
+                f"**{row.name}** ({row.position or 'F'}, {row.team_abbrev}{age_str}{cap_str}) - {row.season or 'Career'}:\n"
                 f"  GP: {row.games_played}, G: {row.goals}, A: {row.assists}, P: {row.points}\n"
-                f"  xG: {row.xg}, CF%: {row.corsi_for_pct}, TOI/G: {row.toi_per_game}"
+                f"  xG: {row.xg or 0:.2f}, CF%: {row.corsi_for_pct or 50:.1f}%, TOI/G: {toi_str}"
             )
 
         return "\n\n".join(stats_text)
@@ -400,17 +470,16 @@ Examples:
             return None
 
         # Format season for display
-        display_season = rows[0].season if rows else "Unknown"
-        if display_season and len(display_season) == 8:
-            display_season = f"{display_season[:4]}-{display_season[6:8]}"
+        display_season = self._format_season_display(rows[0].season if rows else None)
 
         team_names = ", ".join(team_abbrevs)
         stats_text = [f"**{team_names} players ranked by {stat_label} ({display_season} season):**\n"]
         for i, row in enumerate(rows, 1):
+            base_stats = f"GP: {row.games_played or 0}, G: {row.goals or 0}, A: {row.assists or 0}, P: {row.points or 0}"
+            xg_str = f", xG: {row.xg:.1f}" if row.xg else ""
             stats_text.append(
-                f"{i}. **{row.name}** ({row.position or 'F'}, {row.team_abbrev}):\n"
-                f"   GP: {row.games_played}, G: {row.goals}, A: {row.assists}, P: {row.points}, "
-                f"xG: {row.xg:.1f}" if row.xg else f"   GP: {row.games_played}, G: {row.goals}, A: {row.assists}, P: {row.points}"
+                f"{i}. **{row.name or 'Unknown'}** ({row.position or 'F'}, {row.team_abbrev or 'N/A'}):\n"
+                f"   {base_stats}{xg_str}"
             )
 
         return "\n".join(stats_text)
@@ -475,9 +544,7 @@ Examples:
             return None
 
         # Format season for display
-        display_season = latest_season
-        if display_season and len(display_season) == 8:
-            display_season = f"{display_season[:4]}-{display_season[6:8]}"
+        display_season = self._format_season_display(latest_season)
 
         # Group by team
         teams = {}
@@ -581,10 +648,8 @@ Examples:
         if not rows:
             return None
 
-        # Format season for display (20232024 -> 2023-24)
-        display_season = rows[0].season if rows else "Unknown"
-        if display_season and len(display_season) == 8:
-            display_season = f"{display_season[:4]}-{display_season[6:8]}"
+        # Format season for display
+        display_season = self._format_season_display(rows[0].season if rows else None)
 
         # Format as readable text
         stats_text = [f"**Top {limit} players by {stat_label} ({display_season} season):**\n"]
@@ -662,7 +727,8 @@ Examples:
 
         # If only one team mentioned, find their scheduled game
         elif len(teams) == 1:
-            team_abbrev = self._normalize_teams(teams)[0] if self._normalize_teams(teams) else None
+            normalized_teams = self._normalize_teams(teams)
+            team_abbrev = normalized_teams[0] if normalized_teams else None
             if team_abbrev:
                 try:
                     # Refresh schedule and find the team's game
@@ -937,6 +1003,161 @@ Examples:
 
         return "\n".join(lines)
 
+    async def _fetch_value_comparison(
+        self,
+        db: AsyncSession,
+        classification: dict,
+    ) -> str | None:
+        """Fetch salary cap value analysis for players."""
+        players = classification.get("players", [])
+        is_leaders = classification.get("is_leaders_query", False)
+
+        lines = []
+
+        # Disclaimer
+        lines.append("*⚠️ Salary data as of Feb 2025. Contract values may have changed due to trades, extensions, or new signings.*\n")
+
+        if players:
+            # Compare specific players
+            from datetime import date
+            lines.append("**Player Value Comparison:**\n")
+            for player_name in players:
+                if not player_name:
+                    continue
+                result = await db.execute(
+                    text("""
+                        SELECT p.name, p.team_abbrev, p.position, p.cap_hit_cents, p.birth_date,
+                               s.goals, s.assists, s.points, s.games_played, s.xg, s.toi_per_game
+                        FROM players p
+                        JOIN player_season_stats s ON p.id = s.player_id
+                        WHERE LOWER(p.name) LIKE :name
+                        AND s.season = (SELECT MAX(season) FROM player_season_stats)
+                        LIMIT 1
+                    """),
+                    {"name": f"%{player_name.lower()}%"},
+                )
+                row = result.fetchone()
+                if row:
+                    cap = row.cap_hit_cents / 100 if row.cap_hit_cents else None
+                    gp = row.games_played or 1
+                    ppg = round((row.points or 0) / gp, 2)
+
+                    # Calculate age
+                    age_str = ""
+                    if row.birth_date:
+                        today = date.today()
+                        age = today.year - row.birth_date.year
+                        if (today.month, today.day) < (row.birth_date.month, row.birth_date.day):
+                            age -= 1
+                        age_str = f", Age {age}"
+
+                    # Format TOI
+                    toi_str = f"{row.toi_per_game:.1f} min/game" if row.toi_per_game and row.toi_per_game > 0 else ""
+
+                    if cap and cap > 0:
+                        cap_in_millions = cap / 1_000_000
+                        pts_per_mil = round(row.points / cap_in_millions, 1) if row.points and cap_in_millions > 0 else 0
+                        cost_per_point = round(cap / row.points, 0) if row.points and row.points > 0 else None
+                        lines.append(f"**{row.name}** ({row.team_abbrev}, {row.position}{age_str})")
+                        lines.append(f"- Cap Hit: ${cap:,.0f}")
+                        lines.append(f"- Stats: {row.goals}G, {row.assists}A, {row.points}P in {row.games_played} GP ({ppg} PPG)")
+                        # Add xG comparison for shooting luck analysis
+                        xg = row.xg or 0
+                        goals = row.goals or 0
+                        if xg > 0:
+                            goal_diff = goals - xg
+                            luck_indicator = f"+{goal_diff:.1f}" if goal_diff >= 0 else f"{goal_diff:.1f}"
+                            lines.append(f"- xG: {xg:.2f} (Goals vs xG: {luck_indicator})")
+                        if toi_str:
+                            lines.append(f"- Ice Time: {toi_str}")
+                        lines.append(f"- Value: **{pts_per_mil} pts/$1M** (${cost_per_point:,.0f}/point)")
+                        lines.append("")
+                    else:
+                        xg = row.xg or 0
+                        goals = row.goals or 0
+                        lines.append(f"**{row.name}** ({row.team_abbrev}{age_str})")
+                        lines.append(f"- Stats: {row.goals}G, {row.assists}A, {row.points}P in {row.games_played} GP ({ppg} PPG)")
+                        if xg > 0:
+                            goal_diff = goals - xg
+                            luck_indicator = f"+{goal_diff:.1f}" if goal_diff >= 0 else f"{goal_diff:.1f}"
+                            lines.append(f"- xG: {xg:.2f} (Goals vs xG: {luck_indicator})")
+                        if toi_str:
+                            lines.append(f"- Ice Time: {toi_str}")
+                        lines.append(f"- Cap Hit: *Not available*")
+                        lines.append("")
+
+        if is_leaders or not players:
+            # Show league-wide value leaders
+            result = await db.execute(
+                text("""
+                    SELECT p.name, p.team_abbrev, p.cap_hit_cents, s.points, s.games_played,
+                           ROUND(s.points::numeric / NULLIF(p.cap_hit_cents/100000000.0, 0), 1) as pts_per_mil
+                    FROM players p
+                    JOIN player_season_stats s ON p.id = s.player_id
+                    WHERE p.cap_hit_cents IS NOT NULL AND p.cap_hit_cents > 0
+                    AND s.season = (SELECT MAX(season) FROM player_season_stats)
+                    AND s.games_played >= 20
+                    ORDER BY pts_per_mil DESC
+                    LIMIT 10
+                """)
+            )
+            leaders = result.fetchall()
+
+            if leaders:
+                lines.append("**Best Value Players (Points per $1M cap hit):**\n")
+                lines.append("| Rank | Player | Team | Cap Hit | Points | Pts/$1M |")
+                lines.append("|------|--------|------|---------|--------|---------|")
+                for i, row in enumerate(leaders, 1):
+                    cap = row.cap_hit_cents / 100
+                    lines.append(f"| {i} | {row.name} | {row.team_abbrev} | ${cap:,.0f} | {row.points} | **{row.pts_per_mil}** |")
+
+        if not lines or len(lines) <= 2:
+            return None
+
+        return "\n".join(lines)
+
+    def _format_season_display(self, season: str | None) -> str:
+        """Convert season format from '20232024' to '2023-24' for display."""
+        if not season:
+            return "Unknown"
+        if len(season) == 8:
+            return f"{season[:4]}-{season[6:8]}"
+        return season
+
+    def _is_followup_query(self, query: str) -> bool:
+        """Detect if this is a vague follow-up query that needs previous context."""
+        query_lower = query.lower().strip()
+        followup_patterns = [
+            "tell me more",
+            "more details",
+            "explain more",
+            "what else",
+            "go on",
+            "continue",
+            "elaborate",
+            "expand on",
+            "more about",
+            "more thoughts",
+            "what do you think",
+            "why is that",
+            "how so",
+            "can you explain",
+            "what about that",
+            "more info",
+            "keep going",
+            "and?",
+            "anything else",
+            "what's your take",
+        ]
+        # Check if query matches any follow-up pattern
+        for pattern in followup_patterns:
+            if pattern in query_lower:
+                return True
+        # Also check for very short queries that are likely follow-ups
+        if len(query_lower) < 20 and any(word in query_lower for word in ["more", "else", "that", "why", "how"]):
+            return True
+        return False
+
     def _normalize_teams(self, teams: list[str]) -> list[str]:
         """Convert team names to abbreviations."""
         team_mapping = {
@@ -993,16 +1214,28 @@ Examples:
 
         return result
 
-    async def _generate_response(self, query: str, context: str) -> str:
+    async def _generate_response(
+        self,
+        query: str,
+        context: str,
+        conversation_history: list[dict] | None = None,
+    ) -> str:
         """Generate the final response using Claude."""
-        message = self.client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=1500,
-            system=SYSTEM_PROMPT,
-            messages=[
-                {
-                    "role": "user",
-                    "content": f"""Context from database and knowledge base:
+        # Build message list with conversation history for context
+        messages = []
+
+        # Add previous conversation turns (last 10 messages max to avoid token limits)
+        if conversation_history:
+            for msg in conversation_history[-10:]:
+                messages.append({
+                    "role": msg["role"],
+                    "content": msg["content"],
+                })
+
+        # Add current query with context
+        messages.append({
+            "role": "user",
+            "content": f"""Context from database and knowledge base:
 
 {context}
 
@@ -1015,14 +1248,25 @@ Provide a helpful, accurate response based on the context above.
 IMPORTANT:
 - Base your answer ONLY on the context provided above. Do not say you don't have access to data if it's in the context.
 - If the context contains scoring predictions, present them clearly with percentages and player names.
+- If this is a follow-up question referencing previous conversation (e.g., "tell me more", "what about that"), use the conversation history above for context.
 - Always end your response with a "Sources:" section listing where the data came from, formatted as:
 
 Sources:
 - PowerplAI Scoring Model (NHL API game logs, recent form analysis)
 - [Any other sources from the context]"""
-                }
-            ],
+        })
+
+        message = self.client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=1500,
+            system=SYSTEM_PROMPT,
+            messages=messages,
         )
+
+        # Safely access response content
+        if not message.content or len(message.content) == 0:
+            logger.error("empty_response_content")
+            return "I apologize, but I wasn't able to generate a response. Please try again."
 
         return message.content[0].text
 

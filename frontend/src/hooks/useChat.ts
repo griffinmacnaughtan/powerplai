@@ -1,15 +1,24 @@
 'use client'
 
-import { useState, useCallback } from 'react'
-import { api, QueryResponse } from '@/lib/api'
+import { useState, useCallback, useRef } from 'react'
+import { api, QueryResponse, ChatHistoryMessage } from '@/lib/api'
 import { Message } from '@/components/chat/ChatMessage'
 
 export function useChat() {
   const [messages, setMessages] = useState<Message[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Use ref to get current messages in callback without stale closure
+  const messagesRef = useRef<Message[]>([])
+  messagesRef.current = messages
 
   const sendMessage = useCallback(async (content: string) => {
+    // Build conversation history from existing messages (before adding new user message)
+    const history: ChatHistoryMessage[] = messagesRef.current.map((msg) => ({
+      role: msg.role,
+      content: msg.content,
+    }))
+
     // Add user message
     const userMessage: Message = {
       id: `user-${Date.now()}`,
@@ -23,7 +32,8 @@ export function useChat() {
     setError(null)
 
     try {
-      const response: QueryResponse = await api.query(content)
+      // Send query with conversation history for context
+      const response: QueryResponse = await api.query(content, true, history)
 
       // Add assistant message
       const assistantMessage: Message = {

@@ -16,6 +16,10 @@ export const metadata: Metadata = {
   title: 'PowerplAI | AI Hockey Analytics & Fantasy',
   description: 'Your AI-powered hockey analyst. Get insights on NHL stats, player comparisons, predictions, and fantasy hockey advice.',
   keywords: ['hockey', 'NHL', 'analytics', 'AI', 'statistics', 'expected goals', 'xG', 'fantasy hockey', 'predictions', 'PowerplAI'],
+  icons: {
+    icon: '/logo.gif',
+    apple: '/logo.gif',
+  },
 }
 
 export default function RootLayout({

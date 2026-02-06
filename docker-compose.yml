@@ -35,6 +35,21 @@ services:
         condition: service_healthy
     command: uvicorn backend.src.api.main:app --host 0.0.0.0 --port 8000 --reload
 
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: powerplai-frontend
+    ports:
+      - "3001:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+    depends_on:
+      - backend
+
   # ChromaDB for vector storage (local alternative to Pinecone)
   chromadb:
     image: chromadb/chroma:latest

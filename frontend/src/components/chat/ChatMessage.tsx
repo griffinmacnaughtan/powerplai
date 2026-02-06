@@ -1,7 +1,7 @@
 'use client'
 
 import { motion } from 'framer-motion'
-import { User, Zap } from 'lucide-react'
+import { User, Bot } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import clsx from 'clsx'
 
@@ -40,7 +40,18 @@ export function ChatMessage({ message, isLatest }: ChatMessageProps) {
           transition={{ delay: 0.1, type: 'spring', stiffness: 200 }}
           className="flex-shrink-0 w-10 h-10 rounded-xl bg-gradient-to-br from-primary to-primary-dark flex items-center justify-center shadow-nhl"
         >
-          <Zap className="w-5 h-5 text-white" />
+          <motion.div
+            animate={{
+              y: [0, -2, 0],
+            }}
+            transition={{
+              duration: 2,
+              repeat: Infinity,
+              ease: 'easeInOut'
+            }}
+          >
+            <Bot className="w-5 h-5 text-white" />
+          </motion.div>
         </motion.div>
       )}
 

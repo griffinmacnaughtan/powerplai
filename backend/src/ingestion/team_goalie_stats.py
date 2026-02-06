@@ -71,6 +71,10 @@ async def ingest_goalie_stats(db: AsyncSession, season: str = "20252026") -> int
         if not player_id:
             continue
 
+        # Extract team abbreviation once (can be comma-separated for traded players)
+        team_abbrevs_raw = g.get("teamAbbrevs") or ""
+        team_abbrev = team_abbrevs_raw.split(",")[0] if team_abbrevs_raw else None
+
         # Get internal player ID (or create if not exists)
         result = await db.execute(
             text("SELECT id FROM players WHERE nhl_id = :nhl_id"),
@@ -92,7 +96,7 @@ async def ingest_goalie_stats(db: AsyncSession, season: str = "20252026") -> int
                 {
                     "nhl_id": player_id,
                     "name": g.get("goalieFullName", "Unknown"),
-                    "team": g.get("teamAbbrevs", "").split(",")[0] if g.get("teamAbbrevs") else None
+                    "team": team_abbrev
                 }
             )
             result = await db.execute(
@@ -101,8 +105,11 @@ async def ingest_goalie_stats(db: AsyncSession, season: str = "20252026") -> int
             )
             row = result.fetchone()
 
+        if not row:
+            logger.warning("goalie_player_not_found_after_upsert", nhl_id=player_id)
+            continue
+
         internal_id = row[0]
-        team_abbrev = g.get("teamAbbrevs", "").split(",")[0] if g.get("teamAbbrevs") else None
 
         # Upsert goalie stats
         await db.execute(

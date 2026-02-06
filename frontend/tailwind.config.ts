@@ -94,7 +94,7 @@ const config: Config = {
       },
       backgroundImage: {
         'gradient-radial': 'radial-gradient(var(--tw-gradient-stops))',
-        'gradient-nhl': 'linear-gradient(135deg, #041E42 0%, #C8102E 100%)',
+        'gradient-nhl': 'linear-gradient(135deg, #041E42 0%, #5bc0eb 100%)',
         'gradient-ice': 'linear-gradient(180deg, #e8f4fc 0%, #ffffff 100%)',
         'shimmer': 'linear-gradient(90deg, transparent, rgba(255,255,255,0.4), transparent)',
       },

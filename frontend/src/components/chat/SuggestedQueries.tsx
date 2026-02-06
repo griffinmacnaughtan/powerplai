@@ -1,13 +1,34 @@
 'use client'
 
 import { motion } from 'framer-motion'
-import { TrendingUp, Users, Target, Trophy } from 'lucide-react'
+import { Target, DollarSign, TrendingUp, Flame, Scale, Trophy } from 'lucide-react'
 
 interface SuggestedQueriesProps {
   onSelect: (query: string) => void
 }
 
 const suggestions = [
+  {
+    icon: Flame,
+    query: 'Who will score tonight? Give me your top 3 picks with explanations',
+    label: 'Tonight\'s Scorers',
+    color: 'text-accent',
+    bgColor: 'bg-accent-muted',
+  },
+  {
+    icon: DollarSign,
+    query: 'Who are the best value players in the league right now?',
+    label: 'Best Value',
+    color: 'text-green-600',
+    bgColor: 'bg-green-50',
+  },
+  {
+    icon: Scale,
+    query: 'Will the Oilers vs Leafs game go over or under 6.5 goals?',
+    label: 'Over/Under',
+    color: 'text-primary',
+    bgColor: 'bg-primary-50',
+  },
   {
     icon: Target,
     query: 'Who leads the league in expected goals this season?',
@@ -17,30 +38,23 @@ const suggestions = [
   },
   {
     icon: TrendingUp,
-    query: 'Compare Connor McDavid vs Leon Draisaitl this season',
-    label: 'Player Compare',
-    color: 'text-primary',
-    bgColor: 'bg-primary-50',
-  },
-  {
-    icon: Users,
-    query: 'Top 3 players on each team by goals this season',
-    label: 'Team Breakdown',
-    color: 'text-accent',
-    bgColor: 'bg-accent-muted',
+    query: 'Who is better value, Connor Bedard or Macklin Celebrini?',
+    label: 'Value Compare',
+    color: 'text-purple-600',
+    bgColor: 'bg-purple-50',
   },
   {
     icon: Trophy,
-    query: 'Toronto Maple Leafs players ranked by points this season',
-    label: 'Team Stats',
-    color: 'text-primary',
-    bgColor: 'bg-primary-50',
+    query: 'Which players are outperforming their expected goals?',
+    label: 'Overperformers',
+    color: 'text-amber-600',
+    bgColor: 'bg-amber-50',
   },
 ]
 
 export function SuggestedQueries({ onSelect }: SuggestedQueriesProps) {
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
       {suggestions.map((suggestion, i) => (
         <motion.button
           key={suggestion.query}

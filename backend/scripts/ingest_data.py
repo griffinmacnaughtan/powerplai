@@ -233,8 +233,12 @@ async def main(season: str, skip_rosters: bool = False):
 
 
 if __name__ == "__main__":
+    from datetime import datetime
+    # Default to current season (year changes in September when NHL season starts)
+    current_season = str(datetime.now().year if datetime.now().month >= 9 else datetime.now().year - 1)
+
     parser = argparse.ArgumentParser(description="Ingest NHL data")
-    parser.add_argument("--season", default="2023", help="Season year (e.g., 2023 for 2023-24)")
+    parser.add_argument("--season", default=current_season, help="Season year (e.g., 2025 for 2025-26)")
     parser.add_argument("--skip-rosters", action="store_true", help="Skip roster ingestion")
 
     args = parser.parse_args()

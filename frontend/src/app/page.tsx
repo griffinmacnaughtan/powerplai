@@ -2,7 +2,7 @@
 
 import { useRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Trash2, Github, Zap, TrendingUp, Trophy, Target } from 'lucide-react'
+import { Trash2, Github, Linkedin, Bot, TrendingUp, Trophy, Target } from 'lucide-react'
 import { Logo, LogoText } from '@/components/Logo'
 import { ChatMessage } from '@/components/chat/ChatMessage'
 import { ChatInput } from '@/components/chat/ChatInput'
@@ -28,10 +28,12 @@ export default function Home() {
       <header className="sticky top-0 z-50 glass border-b border-border">
         <div className="max-w-5xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <Logo size="sm" />
-            <LogoText className="text-xl" />
-            <span className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-accent/10 text-accent text-xs font-medium">
-              <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
+            <button onClick={clearMessages} className="flex items-center gap-2.5 hover:opacity-80 transition-opacity">
+              <Logo size="sm" link={false} />
+              <LogoText className="text-lg" />
+            </button>
+            <span className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-ice/20 text-ice-dark text-xs font-medium">
+              <span className="w-1.5 h-1.5 rounded-full bg-ice-dark animate-pulse" />
               LIVE
             </span>
           </div>
@@ -56,11 +58,20 @@ export default function Home() {
             <Button
               variant="secondary"
               size="sm"
-              onClick={() => window.open('https://github.com', '_blank')}
+              onClick={() => window.open('https://github.com/griffinmacnaughtan/powerplai', '_blank')}
               className="border-border hover:border-primary hover:bg-primary/5"
             >
               <Github className="w-4 h-4" />
               <span className="hidden sm:inline">GitHub</span>
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => window.open('https://www.linkedin.com/in/griffin-macnaughtan/', '_blank')}
+              className="border-border hover:border-[#0A66C2] hover:bg-[#0A66C2]/5"
+            >
+              <Linkedin className="w-4 h-4" />
+              <span className="hidden sm:inline">LinkedIn</span>
             </Button>
           </div>
         </div>
@@ -78,16 +89,6 @@ export default function Home() {
               exit={{ opacity: 0, y: -20 }}
               className="flex-1 flex flex-col items-center justify-center py-12"
             >
-              {/* Hero */}
-              <motion.div
-                initial={{ scale: 0.8, opacity: 0 }}
-                animate={{ scale: 1, opacity: 1 }}
-                transition={{ delay: 0.1, type: 'spring', stiffness: 100 }}
-                className="mb-8"
-              >
-                <Logo size="lg" />
-              </motion.div>
-
               <motion.h1
                 initial={{ y: 20, opacity: 0 }}
                 animate={{ y: 0, opacity: 1 }}
@@ -116,17 +117,18 @@ export default function Home() {
                 className="flex flex-wrap items-center justify-center gap-3 mb-12"
               >
                 {[
-                  { icon: TrendingUp, label: 'Real-time Stats' },
-                  { icon: Target, label: 'xG Analytics' },
-                  { icon: Trophy, label: 'Fantasy Insights' },
-                  { icon: Zap, label: 'AI-Powered' },
+                  { icon: TrendingUp, label: 'Real-time Stats', tooltip: 'Live data from NHL API updated daily with game logs, standings, and player stats' },
+                  { icon: Target, label: 'xG Analytics', tooltip: 'Expected goals, Corsi, Fenwick, and other advanced metrics from MoneyPuck' },
+                  { icon: Trophy, label: 'Fantasy Insights', tooltip: 'Trade suggestions, value comparisons, and lineup advice for fantasy hockey' },
+                  { icon: Bot, label: 'AI-Powered', tooltip: 'Claude AI analyzes stats and generates insights with natural language understanding' },
                 ].map((feature, i) => (
                   <motion.span
                     key={feature.label}
                     initial={{ opacity: 0, y: 10 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ delay: 0.4 + i * 0.1 }}
-                    className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-surface border border-border shadow-card text-sm text-text-secondary hover:border-primary/30 hover:shadow-soft transition-all cursor-default"
+                    title={feature.tooltip}
+                    className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-surface border border-border shadow-card text-sm text-text-secondary hover:border-primary/30 hover:shadow-soft transition-all cursor-help"
                   >
                     <feature.icon className="w-4 h-4 text-primary" />
                     {feature.label}
@@ -139,7 +141,7 @@ export default function Home() {
                 initial={{ y: 20, opacity: 0 }}
                 animate={{ y: 0, opacity: 1 }}
                 transition={{ delay: 0.5 }}
-                className="w-full max-w-2xl"
+                className="w-full max-w-4xl"
               >
                 <p className="text-sm text-text-muted mb-4 text-center font-medium">
                   Try one of these to get started
@@ -189,10 +191,17 @@ export default function Home() {
                   >
                     <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary to-primary-dark flex items-center justify-center shadow-nhl">
                       <motion.div
-                        animate={{ rotate: 360 }}
-                        transition={{ duration: 2, repeat: Infinity, ease: 'linear' }}
+                        animate={{
+                          y: [0, -3, 0],
+                          rotate: [0, 5, -5, 0],
+                        }}
+                        transition={{
+                          duration: 1.5,
+                          repeat: Infinity,
+                          ease: 'easeInOut'
+                        }}
                       >
-                        <Zap className="w-5 h-5 text-white" />
+                        <Bot className="w-5 h-5 text-white" />
                       </motion.div>
                     </div>
                     <div className="bg-surface border border-border rounded-2xl rounded-bl-md px-5 py-4 shadow-card">
