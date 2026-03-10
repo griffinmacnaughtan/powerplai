@@ -1,6 +1,7 @@
 import type { Config } from 'tailwindcss'
 
 const config: Config = {
+  darkMode: 'class',
   content: [
     './src/pages/**/*.{js,ts,jsx,tsx,mdx}',
     './src/components/**/*.{js,ts,jsx,tsx,mdx}',
@@ -9,18 +10,16 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        // Light theme base - ice rink inspired
-        background: '#f8fafc',
-        surface: '#ffffff',
-        'surface-elevated': '#f1f5f9',
-        'surface-hover': '#e2e8f0',
-        border: '#e2e8f0',
-        'border-dark': '#cbd5e1',
+        background: 'var(--color-background)',
+        surface: 'var(--color-surface)',
+        'surface-elevated': 'var(--color-surface-elevated)',
+        'surface-hover': 'var(--color-surface-hover)',
+        border: 'var(--color-border)',
+        'border-dark': 'var(--color-border-dark)',
 
-        // Text colors
-        'text-primary': '#0f172a',
-        'text-secondary': '#475569',
-        'text-muted': '#94a3b8',
+        'text-primary': 'var(--color-text-primary)',
+        'text-secondary': 'var(--color-text-secondary)',
+        'text-muted': 'var(--color-text-muted)',
 
         // NHL Primary - Deep Blue
         primary: {

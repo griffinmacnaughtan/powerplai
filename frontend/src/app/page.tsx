@@ -1,8 +1,8 @@
 'use client'
 
-import { useRef, useEffect } from 'react'
+import { useRef, useEffect, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Trash2, Github, Linkedin, Bot, TrendingUp, Trophy, Target } from 'lucide-react'
+import { Trash2, Github, Linkedin, Bot, TrendingUp, Trophy, Target, Sun, Moon } from 'lucide-react'
 import { Logo, LogoText } from '@/components/Logo'
 import { ChatMessage } from '@/components/chat/ChatMessage'
 import { ChatInput } from '@/components/chat/ChatInput'
@@ -11,9 +11,27 @@ import { TypingIndicator } from '@/components/LoadingDots'
 import { Button } from '@/components/ui'
 import { useChat } from '@/hooks/useChat'
 
+function useTheme() {
+  const [dark, setDark] = useState(false)
+
+  useEffect(() => {
+    setDark(document.documentElement.classList.contains('dark'))
+  }, [])
+
+  const toggle = () => {
+    const next = !dark
+    setDark(next)
+    document.documentElement.classList.toggle('dark', next)
+    localStorage.setItem('theme', next ? 'dark' : 'light')
+  }
+
+  return { dark, toggle }
+}
+
 export default function Home() {
   const { messages, isLoading, sendMessage, clearMessages } = useChat()
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const { dark, toggle } = useTheme()
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
@@ -39,6 +57,15 @@ export default function Home() {
           </div>
 
           <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={toggle}
+              className="text-text-muted hover:text-text-primary"
+              title={dark ? 'Switch to light mode' : 'Switch to dark mode'}
+            >
+              {dark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+            </Button>
             {hasMessages && (
               <motion.div
                 initial={{ opacity: 0, scale: 0.8 }}
