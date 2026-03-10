@@ -5,7 +5,7 @@
     "dockerfilePath": "docker/Dockerfile.backend.prod"
   },
   "deploy": {
-    "startCommand": "uvicorn backend.src.api.main:app --host 0.0.0.0 --port $PORT --workers 2",
+    "startCommand": "sh -c 'uvicorn backend.src.api.main:app --host 0.0.0.0 --port $PORT --workers 2'",
     "healthcheckPath": "/health",
     "healthcheckTimeout": 30,
     "restartPolicyType": "ON_FAILURE",
