@@ -44,7 +44,8 @@ jobs:
       - name: Build with Next.js (static export)
         working-directory: ./frontend
         env:
-          NEXT_PUBLIC_DEMO_MODE: 'true'
+          NEXT_PUBLIC_DEMO_MODE: ${{ secrets.NEXT_PUBLIC_API_URL == '' && 'true' || 'false' }}
+          NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL }}
           NEXT_PUBLIC_BASE_PATH: '/${{ github.event.repository.name }}'
         run: |
           # Use static export config

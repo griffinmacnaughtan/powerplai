@@ -125,6 +125,8 @@ cors_origins = [
     "http://localhost:3001",
     "http://127.0.0.1:3000",
     "http://127.0.0.1:3001",
+    # GitHub Pages (any user/org)
+    "https://griffinmacnaughtan.github.io",
 ]
 # Add production origins from environment
 if cors_origins_env:

@@ -1,8 +1,11 @@
 'use client'
 
 import Link from 'next/link'
-import Image from 'next/image'
 import { motion } from 'framer-motion'
+
+// Use NEXT_PUBLIC_BASE_PATH so the GIF resolves correctly on GitHub Pages
+// (where the site lives at /powerplai/) as well as on Railway (no basePath)
+const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH || ''
 
 interface LogoProps {
   size?: 'sm' | 'md' | 'lg'
@@ -29,14 +32,14 @@ export function Logo({ size = 'md', animate = true, link = true }: LogoProps) {
         transition: { type: 'spring', stiffness: 400, damping: 15 },
       })}
     >
-      <Image
-        src="/logo.gif"
+      {/* Using a plain img tag so basePath is applied correctly for both
+          GitHub Pages (static export) and Railway (Docker) deployments */}
+      <img
+        src={`${BASE_PATH}/logo.gif`}
         alt="PowerplAI Logo"
         width={sizes[size].width}
         height={sizes[size].height}
         className="rounded-lg"
-        unoptimized
-        priority
       />
     </Component>
   )
