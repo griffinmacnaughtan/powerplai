@@ -73,7 +73,7 @@ export function useChat() {
       const errorResponse: Message = {
         id: `error-${Date.now()}`,
         role: 'assistant',
-        content: `Sorry, I encountered an error: ${errorMessage}. Please make sure the backend server is running on port 8000.`,
+        content: `Sorry, I encountered an error: ${errorMessage}`,
         timestamp: new Date(),
       }
 

@@ -111,6 +111,7 @@ app = FastAPI(
     description="Hockey Analytics & Fantasy Copilot API",
     version="0.1.0",
     lifespan=lifespan,
+    redirect_slashes=False,
 )
 
 # Add rate limiter to app state

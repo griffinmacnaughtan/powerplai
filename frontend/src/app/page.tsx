@@ -41,7 +41,7 @@ export default function Home() {
   const hasMessages = messages.length > 0
 
   return (
-    <div className="min-h-screen flex flex-col">
+    <div className="h-screen flex flex-col overflow-hidden">
       {/* Header */}
       <header className="sticky top-0 z-50 glass border-b border-border">
         <div className="max-w-5xl mx-auto px-4 h-16 flex items-center justify-between">
