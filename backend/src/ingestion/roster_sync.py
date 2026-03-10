@@ -4,6 +4,7 @@ Roster sync module - updates player team assignments from NHL API.
 This ensures players who have been traded are correctly assigned to their
 current team, not the team from their historical stats.
 """
+from datetime import date as date_type
 import structlog
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -66,7 +67,8 @@ async def sync_team_rosters(db: AsyncSession, season: str | None = None) -> dict
                         first_name = player.get("firstName", {})
                         last_name = player.get("lastName", {})
                         name = f"{first_name.get('default', '') if isinstance(first_name, dict) else first_name} {last_name.get('default', '') if isinstance(last_name, dict) else last_name}".strip()
-                        birth_date = player.get("birthDate")  # Format: "1996-01-22"
+                        birth_date_str = player.get("birthDate")  # Format: "1996-01-22"
+                        birth_date = date_type.fromisoformat(birth_date_str) if birth_date_str else None
                         position = player.get("positionCode", default_pos)
 
                         # Update player's current team and bio data in the database
@@ -75,7 +77,7 @@ async def sync_team_rosters(db: AsyncSession, season: str | None = None) -> dict
                                 UPDATE players
                                 SET team_abbrev = :team,
                                     position = COALESCE(:position, position),
-                                    birth_date = COALESCE(CAST(:birth_date AS date), birth_date),
+                                    birth_date = COALESCE(:birth_date, birth_date),
                                     name = COALESCE(NULLIF(:name, ''), name),
                                     updated_at = NOW()
                                 WHERE nhl_id = :nhl_id
@@ -142,7 +144,8 @@ async def sync_single_team_roster(db: AsyncSession, team_abbrev: str, season: st
                 first_name = player.get("firstName", {})
                 last_name = player.get("lastName", {})
                 name = f"{first_name.get('default', '') if isinstance(first_name, dict) else first_name} {last_name.get('default', '') if isinstance(last_name, dict) else last_name}".strip()
-                birth_date = player.get("birthDate")
+                birth_date_str = player.get("birthDate")
+                birth_date = date_type.fromisoformat(birth_date_str) if birth_date_str else None
                 position = player.get("positionCode", default_pos)
 
                 result = await db.execute(
@@ -150,7 +153,7 @@ async def sync_single_team_roster(db: AsyncSession, team_abbrev: str, season: st
                         UPDATE players
                         SET team_abbrev = :team,
                             position = COALESCE(:position, position),
-                            birth_date = COALESCE(CAST(:birth_date AS date), birth_date),
+                            birth_date = COALESCE(:birth_date, birth_date),
                             name = COALESCE(NULLIF(:name, ''), name),
                             updated_at = NOW()
                         WHERE nhl_id = :nhl_id
