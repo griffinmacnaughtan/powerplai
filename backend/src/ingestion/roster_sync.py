@@ -75,7 +75,7 @@ async def sync_team_rosters(db: AsyncSession, season: str | None = None) -> dict
                                 UPDATE players
                                 SET team_abbrev = :team,
                                     position = COALESCE(:position, position),
-                                    birth_date = COALESCE(:birth_date::date, birth_date),
+                                    birth_date = COALESCE(CAST(:birth_date AS date), birth_date),
                                     name = COALESCE(NULLIF(:name, ''), name),
                                     updated_at = NOW()
                                 WHERE nhl_id = :nhl_id
@@ -150,7 +150,7 @@ async def sync_single_team_roster(db: AsyncSession, team_abbrev: str, season: st
                         UPDATE players
                         SET team_abbrev = :team,
                             position = COALESCE(:position, position),
-                            birth_date = COALESCE(:birth_date::date, birth_date),
+                            birth_date = COALESCE(CAST(:birth_date AS date), birth_date),
                             name = COALESCE(NULLIF(:name, ''), name),
                             updated_at = NOW()
                         WHERE nhl_id = :nhl_id

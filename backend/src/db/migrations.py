@@ -6,6 +6,7 @@ Run these when adding new tables or columns.
 """
 import asyncio
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 import structlog
 
 from backend.src.db.database import engine
@@ -18,7 +19,11 @@ async def create_all_tables():
     """Create all tables that don't exist yet."""
     async with engine.begin() as conn:
         # Enable pgvector extension (required for VECTOR columns)
-        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+        # Use a nested savepoint to handle race condition when multiple workers start simultaneously
+        try:
+            await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+        except IntegrityError:
+            pass  # Already exists, safe to ignore
         await conn.run_sync(Base.metadata.create_all)
     logger.info("ensured_all_tables_exist")
 

@@ -302,8 +302,8 @@ async def update_moneypuck_stats(db: AsyncSession, season_year: str) -> dict:
             # Ensure player exists
             await db.execute(
                 text("""
-                    INSERT INTO players (nhl_id, name, team_abbrev)
-                    VALUES (:nhl_id, :name, :team_abbrev)
+                    INSERT INTO players (nhl_id, name, team_abbrev, created_at, updated_at)
+                    VALUES (:nhl_id, :name, :team_abbrev, NOW(), NOW())
                     ON CONFLICT (nhl_id) DO UPDATE SET
                         name = EXCLUDED.name,
                         updated_at = NOW()
@@ -459,8 +459,8 @@ async def run_startup_updates() -> dict:
                     # Ensure player exists
                     await db.execute(
                         text("""
-                            INSERT INTO players (nhl_id, name, team_abbrev)
-                            VALUES (:nhl_id, :name, :team_abbrev)
+                            INSERT INTO players (nhl_id, name, team_abbrev, created_at, updated_at)
+                            VALUES (:nhl_id, :name, :team_abbrev, NOW(), NOW())
                             ON CONFLICT (nhl_id) DO UPDATE SET team_abbrev = EXCLUDED.team_abbrev
                         """),
                         {"nhl_id": record["nhl_player_id"], "name": record["player_name"], "team_abbrev": record["team_abbrev"]},
