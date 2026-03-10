@@ -105,7 +105,7 @@ export default function Home() {
       </header>
 
       {/* Main content */}
-      <main className="flex-1 flex flex-col max-w-5xl mx-auto w-full px-4 py-6">
+      <main className="flex-1 min-h-0 flex flex-col max-w-5xl mx-auto w-full px-4 py-6">
         <AnimatePresence mode="wait">
           {!hasMessages ? (
             // Welcome screen
@@ -194,10 +194,10 @@ export default function Home() {
               key="chat"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
-              className="flex-1 flex flex-col"
+              className="flex-1 min-h-0 flex flex-col"
             >
               {/* Messages */}
-              <div className="flex-1 overflow-y-auto py-6 space-y-6">
+              <div className="flex-1 min-h-0 overflow-y-auto py-6 space-y-6">
                 <AnimatePresence initial={false}>
                   {messages.map((message) => (
                     <ChatMessage
