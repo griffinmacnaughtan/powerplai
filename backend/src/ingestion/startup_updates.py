@@ -328,11 +328,13 @@ async def update_moneypuck_stats(db: AsyncSession, season_year: str) -> dict:
                         INSERT INTO player_season_stats (
                             player_id, season, team_abbrev, games_played,
                             goals, assists, points, shots, toi_per_game,
-                            xg, xg_per_60, corsi_for_pct, fenwick_for_pct
+                            xg, xg_per_60, corsi_for_pct, fenwick_for_pct,
+                            created_at
                         ) VALUES (
                             :player_id, :season, :team_abbrev, :games_played,
                             :goals, :assists, :points, :shots, :toi_per_game,
-                            :xg, :xg_per_60, :corsi_for_pct, :fenwick_for_pct
+                            :xg, :xg_per_60, :corsi_for_pct, :fenwick_for_pct,
+                            NOW()
                         )
                         ON CONFLICT (player_id, season) DO UPDATE SET
                             team_abbrev = EXCLUDED.team_abbrev,
@@ -476,11 +478,13 @@ async def run_startup_updates() -> dict:
                                 INSERT INTO player_season_stats (
                                     player_id, season, team_abbrev, games_played,
                                     goals, assists, points, shots, toi_per_game,
-                                    xg, xg_per_60, corsi_for_pct, fenwick_for_pct
+                                    xg, xg_per_60, corsi_for_pct, fenwick_for_pct,
+                                    created_at
                                 ) VALUES (
                                     :player_id, :season, :team_abbrev, :games_played,
                                     :goals, :assists, :points, :shots, :toi_per_game,
-                                    :xg, :xg_per_60, :corsi_for_pct, :fenwick_for_pct
+                                    :xg, :xg_per_60, :corsi_for_pct, :fenwick_for_pct,
+                                    NOW()
                                 )
                                 ON CONFLICT (player_id, season) DO UPDATE SET
                                     games_played = EXCLUDED.games_played,
