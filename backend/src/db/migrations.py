@@ -17,6 +17,8 @@ logger = structlog.get_logger()
 async def create_all_tables():
     """Create all tables that don't exist yet."""
     async with engine.begin() as conn:
+        # Enable pgvector extension (required for VECTOR columns)
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await conn.run_sync(Base.metadata.create_all)
     logger.info("ensured_all_tables_exist")
 
