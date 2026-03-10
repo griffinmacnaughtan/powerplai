@@ -1,0 +1,77 @@
+name,country,gp,g,a,pts,position
+# SKATERS - Live stats as of Feb 17, 2026
+# Source: ESPN Olympics coverage
+# -------------------------------------------------------------------------
+# TOP 10 SCORING LEADERS
+Connor McDavid,CAN,3,2,7,9,F
+Timo Meier,SUI,4,3,4,7,F
+Martin Necas,CZE,4,3,4,7,F
+Macklin Celebrini,CAN,3,4,2,6,F
+Tim Stutzle,GER,4,4,2,6,F
+Juraj Slafkovsky,SVK,3,3,3,6,F
+Sidney Crosby,CAN,3,2,4,6,F
+Leon Draisaitl,GER,4,2,4,6,F
+Nick Olesen,DEN,4,4,1,5,F
+Auston Matthews,USA,3,3,2,5,F
+# -------------------------------------------------------------------------
+# CANADA - Full roster
+Nathan MacKinnon,CAN,3,1,3,4,F
+Cale Makar,CAN,3,1,3,4,D
+Mitch Marner,CAN,3,0,4,4,F
+Brad Marchand,CAN,3,2,1,3,F
+Brayden Point,CAN,3,1,2,3,F
+Sam Reinhart,CAN,3,1,1,2,F
+Mark Stone,CAN,3,0,2,2,F
+# -------------------------------------------------------------------------
+# USA
+Jack Hughes,USA,3,2,2,4,F
+Matthew Tkachuk,USA,3,1,3,4,F
+Jack Eichel,USA,3,2,1,3,F
+Brady Tkachuk,USA,3,1,2,3,F
+Tage Thompson,USA,3,2,0,2,F
+Quinn Hughes,USA,3,0,2,2,D
+Adam Fox,USA,3,0,2,2,D
+Brock Nelson,USA,3,1,1,2,F
+Charlie McAvoy,USA,3,0,1,1,D
+# -------------------------------------------------------------------------
+# SWEDEN
+Rasmus Dahlin,SWE,3,1,3,4,D
+William Nylander,SWE,3,2,1,3,F
+Mika Zibanejad,SWE,3,1,2,3,F
+Filip Forsberg,SWE,3,2,0,2,F
+Gustav Forsling,SWE,3,0,2,2,D
+Elias Pettersson,SWE,3,1,1,2,F
+# -------------------------------------------------------------------------
+# FINLAND
+Aleksander Barkov,FIN,3,2,2,4,F
+Mikko Rantanen,FIN,3,1,2,3,F
+Sebastian Aho,FIN,3,1,2,3,F
+Miro Heiskanen,FIN,3,0,2,2,D
+# -------------------------------------------------------------------------
+# SWITZERLAND
+Nino Niederreiter,SUI,4,2,2,4,F
+Nico Hischier,SUI,4,1,2,3,F
+Roman Josi,SUI,4,0,3,3,D
+Kevin Fiala,SUI,4,1,1,2,F
+# -------------------------------------------------------------------------
+# CZECHIA
+David Pastrnak,CZE,4,2,2,4,F
+# -------------------------------------------------------------------------
+# GERMANY
+Moritz Seider,GER,4,0,3,3,D
+# -------------------------------------------------------------------------
+# SLOVAKIA
+Martin Fehervary,SVK,3,0,2,2,D
+
+# GOALIES
+name,country,gp,w,gaa,sv,position
+Leonardo Genoni,SUI,3,3,0.99,0.962,G
+Connor Hellebuyck,USA,2,2,1.00,0.952,G
+Jordan Binnington,CAN,2,2,1.00,0.950,G
+Logan Thompson,CAN,1,1,1.00,0.960,G
+Juuse Saros,FIN,3,2,1.34,0.946,G
+Philipp Grubauer,GER,3,2,2.03,0.934,G
+Samuel Hlavaj,SVK,2,1,3.00,0.934,G
+Frederik Andersen,DEN,2,1,2.58,0.913,G
+Jacob Markstrom,SWE,2,2,2.00,0.905,G
+Filip Gustavsson,SWE,2,2,2.55,0.889,G

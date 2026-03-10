@@ -1,153 +1,197 @@
 # PowerplAI
 
-A hockey analytics copilot that combines structured stats with RAG to answer natural language questions about the NHL. 
+**NHL Analytics & Prediction Platform**
 
-Ask "Who should I start tonight?" and get probability-weighted predictions. Ask "Compare McDavid and Mackinnon" and get per-game normalized stats with context. Ask "What is expected goals?" and get an explanation pulled from indexed hockey analytics articles.
+A full-stack hockey analytics platform that aggregates data from 5+ sources, generates probability-based scoring predictions using a multi-factor weighted model, and provides an LLM-powered copilot for natural language queries.
 
-## Why I Built This
+[![Demo](https://img.shields.io/badge/Demo-GitHub%20Pages-blue)](https://yourusername.github.io/powerplai)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/)
+[![Next.js](https://img.shields.io/badge/Next.js-14-black.svg)](https://nextjs.org/)
 
-Most fantasy hockey tools are either:
-- Raw stat dumps with no analysis
-- Paywalled "expert" picks with no methodology
+---
 
-I wanted something that could explain *why* a player might do well in a given situation, backed by actual data—recent form, goalie matchups, team pace, head-to-head history. And I wanted to ask questions in plain English.
+## Overview
 
-## What It Actually Does
+PowerplAI combines structured hockey data with AI to answer questions like:
+- "Who's most likely to score tonight?"
+- "Compare McDavid vs MacKinnon"
+- "What is expected goals?"
+- "Best value picks for fantasy?"
 
-**Stats queries** → SQL against PostgreSQL with player/game data
-```
-"How many goals does Makar have this season?"
-→ Queries player_season_stats, returns structured response
-```
+**Key Features:**
+- Multi-factor probability model for scoring predictions
+- RAG-powered explanations of hockey analytics concepts
+- Real-time data from NHL API, MoneyPuck, ESPN
+- Model evaluation with calibration analysis
+- Config-driven data pipelines with validation
 
-**Comparisons** → Normalized per-60 stats with usage context
-```
-"Compare Draisaitl and Matthews"
-→ Fetches both players, calculates per-game rates, notes ice time differences
-```
-
-**Predictions** → Weighted ensemble model for tonight's games
-```
-"Who's most likely to score tonight?"
-→ Runs prediction engine across all scheduled games, ranks by P(goal)
-```
-
-**Explainers** → RAG search over hockey analytics content
-```
-"What does Corsi mean?"
-→ Semantic search against indexed articles, synthesizes answer
-```
+---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                        User Query                           │
-└─────────────────────────────┬───────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                 Query Classification (Claude)               │
-│                                                             │
-│  stats_lookup | comparison | prediction | explainer         │
-└─────────────────────────────┬───────────────────────────────┘
-                              │
-              ┌───────────────┴───────────────┐
-              ▼                               ▼
-┌──────────────────────────┐    ┌──────────────────────────┐
-│     PostgreSQL           │    │     RAG (pgvector)       │
-│                          │    │                          │
-│ • players                │    │ • article embeddings     │
-│ • player_season_stats    │    │ • semantic search        │
-│ • game_logs              │    │ • MiniLM-L6-v2           │
-│ • injuries (ESPN)        │    │                          │
-│ • salaries (scraped)     │    │                          │
-│ • team_stats             │    │                          │
-└────────────┬─────────────┘    └────────────┬─────────────┘
-             │                               │
-             └───────────────┬───────────────┘
-                             ▼
-┌─────────────────────────────────────────────────────────────┐
-│               Response Synthesis (Claude)                   │
-│                                                             │
-│  Combines SQL results + RAG context → cited response        │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                           Frontend (Next.js 14)                          │
+│  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐    │
+│  │ Chat UI      │ │ Predictions  │ │ Charts       │ │ Leaderboards │    │
+│  └──────────────┘ └──────────────┘ └──────────────┘ └──────────────┘    │
+└───────────────────────────────────┬─────────────────────────────────────┘
+                                    │ REST API
+┌───────────────────────────────────▼─────────────────────────────────────┐
+│                          Backend (FastAPI)                               │
+│                                                                          │
+│  ┌──────────────────────────────────────────────────────────────────┐   │
+│  │                    Query Copilot (Claude)                         │   │
+│  │  • 13+ query types with classification                            │   │
+│  │  • Routes to SQL, RAG, or prediction engine                       │   │
+│  │  • Synthesizes responses with citations                           │   │
+│  └──────────────────────────────────────────────────────────────────┘   │
+│                                                                          │
+│  ┌─────────────────┐ ┌─────────────────┐ ┌──────────────────────────┐   │
+│  │ Prediction      │ │ RAG Service     │ │ Data Pipelines           │   │
+│  │ Engine          │ │                 │ │                          │   │
+│  │                 │ │ • Semantic      │ │ • Orchestrated (cron)    │   │
+│  │ • 6-factor      │ │   search        │ │ • Incremental loading    │   │
+│  │   weighted      │ │ • Hybrid        │ │ • Validation checks      │   │
+│  │   model         │ │   retrieval     │ │ • Progress tracking      │   │
+│  │ • Poisson       │ │ • Re-ranking    │ │                          │   │
+│  │   probability   │ │ • Citations     │ │ Sources:                 │   │
+│  │ • Calibration   │ │                 │ │ • NHL API                │   │
+│  │   tracking      │ │                 │ │ • MoneyPuck              │   │
+│  │                 │ │                 │ │ • ESPN                   │   │
+│  │                 │ │                 │ │ • PuckPedia              │   │
+│  └────────┬────────┘ └────────┬────────┘ └─────────────┬────────────┘   │
+│           │                   │                         │                │
+└───────────┼───────────────────┼─────────────────────────┼────────────────┘
+            │                   │                         │
+            ▼                   ▼                         ▼
+┌───────────────────────────────────────────────────────────────────────────┐
+│                    PostgreSQL 16 + pgvector                               │
+│                                                                           │
+│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌─────────────────────┐ │
+│  │ players     │ │ game_logs   │ │ predictions │ │ documents           │ │
+│  │ teams       │ │ games       │ │ audit_trail │ │ (embeddings)        │ │
+│  │ season_stats│ │ injuries    │ │             │ │                     │ │
+│  └─────────────┘ └─────────────┘ └─────────────┘ └─────────────────────┘ │
+└───────────────────────────────────────────────────────────────────────────┘
 ```
+
+---
 
 ## Prediction Model
 
-The scoring predictions aren't just "this guy has the most points." It's a weighted ensemble:
+The prediction engine uses a **multi-factor weighted probability model** (not an ensemble of ML models). It combines domain-knowledge-weighted features and converts expected values to probabilities using a Poisson distribution.
+
+### Factor Weights
 
 | Factor | Weight | Description |
 |--------|--------|-------------|
-| Recent form | 30% | Last 5 games PPG, weighted recency |
-| Season baseline | 25% | Full season averages |
-| Head-to-head | 15% | Historical performance vs this opponent |
-| Home/away splits | 10% | Some players just perform better at home |
-| Goalie matchup | 10% | Opponent starter's Sv% vs league avg |
-| Team pace | 10% | Combined goals-per-game of both teams |
+| Recent Form | 30% | Last 5 games performance (most predictive for streaks) |
+| Season Baseline | 25% | Full season average (stability) |
+| H2H History | 15% | Career performance vs specific opponent |
+| Home/Away | 10% | Location-based adjustments |
+| Goalie Matchup | 10% | Opponent goalie save % vs league average |
+| Team Pace | 10% | Combined goals-per-game environment |
 
-Confidence scoring considers: games played (min 10 for "high"), form consistency, and H2H sample size.
+### Probability Conversion
+
+```
+P(≥1 goal) = 1 - e^(-λ)   where λ = expected goals
+```
+
+This Poisson-based approach is appropriate for rare events (goals) with a known average rate.
+
+### Model Evaluation
+
+The system includes comprehensive evaluation:
+- **Brier Score**: Measures calibration quality
+- **Calibration Buckets**: Compares predicted vs actual rates
+- **Baseline Comparison**: Validates model adds value over naive prediction
+
+Access evaluation at: `GET /api/model/evaluation`
+
+---
+
+## Data Pipeline
+
+### Sources
+
+| Source | Data | Frequency |
+|--------|------|-----------|
+| NHL API | Rosters, schedules, game logs | Real-time |
+| NHL Stats API | Team/goalie advanced stats | Daily |
+| MoneyPuck | xG, Corsi, Fenwick, WAR | Daily |
+| ESPN | Injury reports | Hourly |
+| PuckPedia | Salary cap data | Weekly |
+
+### Pipeline Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Pipeline Orchestrator                         │
+│                                                                  │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────────────┐   │
+│  │ Schedule │→│ Game     │→│ Player   │→│ Advanced Stats   │   │
+│  │ Sync     │ │ Logs     │ │ Stats    │ │ (MoneyPuck)      │   │
+│  └──────────┘ └──────────┘ └──────────┘ └──────────────────┘   │
+│       │                                                          │
+│       │  ┌──────────┐ ┌──────────┐ ┌──────────────────────────┐ │
+│       └→ │ Injuries │ │ Salary   │ │ Validation & Quality    │ │
+│          │ (ESPN)   │ │ Cap      │ │ Checks                  │ │
+│          └──────────┘ └──────────┘ └──────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+Features:
+- **Dependency-aware execution**: Pipelines run in correct order
+- **Incremental loading**: Only fetch new/changed data
+- **Retry with backoff**: Handles API rate limits gracefully
+- **Data validation**: Anomaly detection, completeness checks
+
+---
 
 ## Quick Start
 
 ### Prerequisites
 
 - Docker & Docker Compose
-- Python 3.11+
+- Python 3.11+ (for local development)
 - Node.js 18+ (for frontend)
 - Anthropic API key
 
-### Setup
+### 1. Clone & Configure
 
 ```bash
-# Clone
 git clone https://github.com/yourusername/powerplai.git
 cd powerplai
-
-# Environment
 cp .env.example .env
 # Edit .env and add your ANTHROPIC_API_KEY
 ```
 
-### Environment Variables
+### 2. Start Services
 
 ```bash
-# Required
-ANTHROPIC_API_KEY=sk-ant-...
-
-# Database (defaults work with docker-compose)
-DATABASE_URL=postgresql+asyncpg://powerplai:powerplai_dev@localhost:5432/powerplai
-
-# Optional
-CHROMA_HOST=localhost
-CHROMA_PORT=8001
-NHL_API_BASE=https://api-web.nhle.com/v1
-```
-
-### Run Everything
-
-```bash
-# Start backend + database
+# Start everything with Docker
 docker-compose up -d
 
-# This spins up:
-# - PostgreSQL 16 + pgvector on :5432 (mapped to 5433 externally)
-# - FastAPI backend on :8000
-# - ChromaDB on :8001
-
-# Ingest initial data (takes a few minutes)
-pip install -e .
-python -m backend.scripts.ingest_data --season 2024
-
-# Frontend (separate terminal)
-cd frontend
-npm install
-npm run dev
-# → http://localhost:3000
+# Services:
+# - PostgreSQL + pgvector: localhost:5433
+# - FastAPI backend: localhost:8000
+# - Next.js frontend: localhost:3001
 ```
 
-### Try It
+### 3. Initial Data Load
+
+```bash
+# Install Python package
+pip install -e .
+
+# Ingest current season data
+python -m backend.scripts.ingest_data --season 2025
+```
+
+### 4. Try It
 
 ```bash
 # Health check
@@ -160,10 +204,9 @@ curl -X POST http://localhost:8000/api/query \
 
 # Get tonight's predictions
 curl http://localhost:8000/api/predictions/tonight
-
-# Player lookup
-curl "http://localhost:8000/api/players/connor%20mcdavid"
 ```
+
+---
 
 ## API Reference
 
@@ -171,43 +214,58 @@ curl "http://localhost:8000/api/players/connor%20mcdavid"
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/query` | POST | Main copilot - ask any question (rate limited: 20/min) |
+| `/api/query` | POST | Main copilot - ask any question |
 | `/api/players/{name}` | GET | Player stats lookup |
-| `/api/leaders/{stat}` | GET | League leaders (goals, assists, points, xg, corsi_for_pct) |
-| `/api/predictions/tonight` | GET | Scoring predictions for today's games |
-| `/api/predictions/matchup/{home}/{away}` | GET | Predictions for specific matchup |
+| `/api/leaders/{stat}` | GET | League leaders |
+| `/api/predictions/tonight` | GET | Tonight's scoring predictions |
+| `/api/predictions/matchup/{home}/{away}` | GET | Specific matchup prediction |
 
-### Data Endpoints
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/games/today` | GET | Today's schedule |
-| `/api/games/logs/{player}` | GET | Player's recent game logs |
-| `/api/injuries` | GET | Active injuries (from ESPN) |
-| `/api/salary/team/{team}` | GET | Team cap breakdown |
-| `/api/stats/matchup/{home}/{away}` | GET | Matchup context (pace, goalie stats) |
-
-### Admin Endpoints
+### Model & Evaluation
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/data/status` | GET | Ingestion status |
-| `/api/updates/run` | POST | Trigger data refresh |
-| `/health` | GET | Health check |
+| `/api/model/info` | GET | Model architecture details |
+| `/api/model/evaluation` | GET | Evaluation metrics (Brier, calibration) |
+| `/api/model/backtest` | GET | Rolling window backtest |
+| `/api/audit/calibration-chart` | GET | Calibration visualization data |
 
-## Data Pipeline
+### Pipeline & Data
 
-Data comes from multiple sources, each with different update schedules:
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/pipeline/status` | GET | Pipeline orchestrator status |
+| `/api/pipeline/run/{name}` | POST | Trigger specific pipeline |
+| `/api/validation/run` | GET | Run data validation checks |
+| `/api/validation/stats` | GET | Data statistics |
 
-| Source | What | Frequency |
-|--------|------|-----------|
-| NHL API | Rosters, schedules, game logs | Real-time (on startup) |
-| NHL Stats API | Team/goalie advanced stats | Daily |
-| MoneyPuck | xG, Corsi, Fenwick, WAR | Daily CSV drops |
-| ESPN | Injury reports | Hourly during season |
-| PuckPedia | Salary cap data | Weekly (scraped) |
+---
 
-The backend auto-updates on startup and can be triggered manually via `/api/updates/run`.
+## Data Dictionary
+
+### Core Tables
+
+| Table | Description | Key Fields |
+|-------|-------------|------------|
+| `players` | Player registry | `nhl_id`, `name`, `position`, `team_abbrev` |
+| `player_season_stats` | Season aggregates | `player_id`, `season`, `goals`, `assists`, `xg`, `corsi_for_pct` |
+| `game_logs` | Per-game performance | `player_id`, `game_date`, `goals`, `assists`, `shots`, `toi` |
+| `games` | Schedule & results | `nhl_game_id`, `home_team_abbrev`, `away_team_abbrev`, `game_state` |
+| `goalie_stats` | Goalie metrics | `player_id`, `save_pct`, `gaa`, `wins` |
+| `injuries` | Active injuries | `player_id`, `status`, `injury_type`, `expected_return` |
+| `documents` | RAG knowledge base | `content`, `embedding` (vector[384]), `source`, `url` |
+| `prediction_audit` | Prediction validation | `player_id`, `game_date`, `prob_goal`, `actual_goals` |
+
+### Key Metrics
+
+| Metric | Description | Source |
+|--------|-------------|--------|
+| `xG` (Expected Goals) | Goal probability based on shot quality | MoneyPuck |
+| `Corsi For %` | Shot attempt differential (for/total) | MoneyPuck |
+| `Fenwick For %` | Like Corsi, excluding blocked shots | MoneyPuck |
+| `WAR` | Wins Above Replacement | MoneyPuck |
+| `PDO` | Shooting % + Save % (luck indicator) | Calculated |
+
+---
 
 ## Project Structure
 
@@ -215,45 +273,55 @@ The backend auto-updates on startup and can be triggered manually via `/api/upda
 powerplai/
 ├── backend/
 │   ├── src/
-│   │   ├── api/main.py          # FastAPI app, all endpoints
+│   │   ├── api/main.py           # FastAPI app (100+ endpoints)
 │   │   ├── agents/
-│   │   │   ├── copilot.py       # Query classification + response synthesis
-│   │   │   ├── predictions.py   # Scoring model
-│   │   │   └── rag.py           # Embedding + semantic search
+│   │   │   ├── copilot.py        # Query classification & synthesis
+│   │   │   ├── predictions.py    # Multi-factor scoring model
+│   │   │   ├── rag.py            # Semantic search with hybrid retrieval
+│   │   │   └── model_evaluation.py # Metrics & backtesting
+│   │   ├── pipeline/
+│   │   │   ├── config.py         # Declarative pipeline definitions
+│   │   │   ├── orchestrator.py   # Scheduling & execution
+│   │   │   ├── validation.py     # Data quality checks
+│   │   │   └── incremental.py    # Delta loading utilities
 │   │   ├── db/
-│   │   │   ├── models.py        # SQLAlchemy models
-│   │   │   └── migrations.py    # Schema management
-│   │   └── ingestion/           # Data pipelines
-│   │       ├── nhl_api.py       # Official NHL data
-│   │       ├── moneypuck.py     # Advanced stats CSVs
-│   │       ├── espn_injuries.py # Injury scraping
-│   │       ├── salary_cap.py    # PuckPedia scraping
-│   │       └── games.py         # Schedule + game logs
-│   ├── scripts/
-│   │   └── ingest_data.py       # CLI for bulk ingestion
+│   │   │   ├── models.py         # SQLAlchemy ORM
+│   │   │   └── migrations.py     # Schema management
+│   │   └── ingestion/            # Data source integrations
 │   └── tests/
-├── frontend/                     # Next.js 14 + TypeScript
+├── frontend/
 │   ├── src/
-│   │   ├── app/                 # App router pages
-│   │   ├── components/          # Chat UI, stat cards
-│   │   └── hooks/useChat.ts     # Query state management
+│   │   ├── app/                  # Next.js app router
+│   │   ├── components/
+│   │   │   ├── chat/             # Chat UI components
+│   │   │   ├── charts/           # Data visualizations
+│   │   │   └── ui/               # Base components
+│   │   ├── hooks/useChat.ts      # Chat state management
+│   │   └── lib/
+│   │       ├── api.ts            # API client
+│   │       └── demoData.ts       # Demo mode data
 │   └── package.json
 ├── docker/
+│   ├── init.sql                  # Database schema
 │   ├── Dockerfile.backend
-│   ├── Dockerfile.backend.prod
-│   └── init.sql
-├── docker-compose.yml            # Local dev stack
-├── docker-compose.prod.yml       # Production config
-├── pyproject.toml                # Python deps
-└── railway.json                  # Railway deployment config
+│   └── Dockerfile.backend.prod
+├── .github/workflows/
+│   └── deploy-pages.yml          # GitHub Pages deployment
+├── docker-compose.yml            # Development stack
+├── docker-compose.prod.yml       # Production stack
+├── pyproject.toml                # Python dependencies
+├── AUDIT.md                      # Technical audit findings
+└── DATA_DICTIONARY.md            # Schema documentation
 ```
+
+---
 
 ## Development
 
-### Local without Docker
+### Local Setup (without Docker)
 
 ```bash
-# You'll need Postgres with pgvector running locally
+# Database (needs PostgreSQL with pgvector)
 createdb powerplai
 
 # Backend
@@ -261,53 +329,79 @@ pip install -e ".[dev]"
 uvicorn backend.src.api.main:app --reload
 
 # Frontend
-cd frontend && npm run dev
+cd frontend && npm install && npm run dev
 ```
 
 ### Testing
 
 ```bash
+# Backend tests
 pytest backend/tests/ -v
-```
 
-### Linting
-
-```bash
+# Linting
 ruff check backend/
 mypy backend/src/
 ```
 
+### Running Pipelines Manually
+
+```bash
+# Via API
+curl -X POST http://localhost:8000/api/pipeline/run/schedule_sync
+curl -X POST http://localhost:8000/api/pipeline/run/game_logs
+curl -X POST http://localhost:8000/api/pipeline/run/injuries
+
+# Check status
+curl http://localhost:8000/api/pipeline/status
+```
+
+---
+
 ## Deployment
 
-See [DEPLOY.md](./DEPLOY.md) for detailed instructions on deploying to Railway (backend) + Vercel (frontend).
+### GitHub Pages (Frontend Demo)
 
-Quick version:
-- Backend: Railway with `docker/Dockerfile.backend.prod`
-- Database: Railway managed Postgres
-- Frontend: Vercel with `frontend/` as root
+The frontend automatically deploys to GitHub Pages on push to `main`. The demo mode uses cached sample data.
 
-## Roadmap
+### Full Stack (Railway + Vercel)
 
-- [x] Core stats queries + Claude synthesis
-- [x] Prediction model with goalie/pace adjustments
-- [x] Chat UI with streaming responses
-- [x] Auto-updating data pipelines
-- [ ] Fantasy lineup optimizer
-- [ ] Historical trend charts
-- [ ] Betting edge detection (odds API integration)
-- [ ] Multi-model evaluation framework
+See [DEPLOY.md](./DEPLOY.md) for detailed instructions.
+
+**Quick version:**
+1. **Backend**: Railway with `docker/Dockerfile.backend.prod`
+2. **Database**: Railway managed PostgreSQL
+3. **Frontend**: Vercel or Railway
+
+---
 
 ## Tech Stack
 
-| Layer | Tech |
-|-------|------|
-| LLM | Claude (Anthropic) |
+| Layer | Technology |
+|-------|------------|
+| LLM | Claude 3.5 Sonnet (Anthropic) |
 | Backend | Python 3.11, FastAPI, SQLAlchemy |
 | Database | PostgreSQL 16 + pgvector |
 | Embeddings | sentence-transformers (MiniLM-L6-v2) |
-| Frontend | Next.js 14, TypeScript, Tailwind |
-| Infra | Docker, Railway, Vercel |
+| Frontend | Next.js 14, TypeScript, Tailwind CSS |
+| Charts | Recharts |
+| Pipeline | APScheduler |
+| Infrastructure | Docker, Railway, Vercel |
+
+---
+
+## Screenshots
+
+*Add screenshots of the chat interface, prediction cards, and calibration charts here.*
+
+---
 
 ## License
 
 MIT
+
+---
+
+## Acknowledgments
+
+- Data sources: NHL API, MoneyPuck, ESPN, PuckPedia
+- Built with Claude (Anthropic) for LLM capabilities

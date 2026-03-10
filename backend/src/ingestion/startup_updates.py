@@ -418,6 +418,7 @@ async def run_startup_updates() -> dict:
     2. Game log catch-up
     3. Injury updates
     4. Team/goalie stats refresh
+    5. Olympic data refresh (if tournament is active)
 
     Returns summary of all updates performed.
     """
@@ -428,6 +429,8 @@ async def run_startup_updates() -> dict:
         "injuries": None,
         "team_stats": None,
         "rosters": None,
+        "olympics": None,
+        "daily_audit": None,
         "errors": [],
     }
 
@@ -556,6 +559,32 @@ async def run_startup_updates() -> dict:
             logger.error("moneypuck_refresh_failed", error=str(e))
             results["errors"].append(f"moneypuck_refresh: {str(e)}")
 
+        # 7. Update Olympic hockey data (if tournament is active)
+        try:
+            from backend.src.ingestion.olympics import (
+                is_olympic_tournament_active,
+                update_olympic_data,
+            )
+
+            if is_olympic_tournament_active():
+                logger.info("olympics_tournament_active_updating")
+                results["olympics"] = await update_olympic_data()
+            else:
+                results["olympics"] = {"skipped": True, "reason": "tournament_not_active"}
+        except Exception as e:
+            logger.error("olympic_update_failed", error=str(e))
+            results["errors"].append(f"olympics: {str(e)}")
+
+        # 8. Run daily prediction audit (validate yesterday + log today)
+        try:
+            from backend.src.agents.daily_audit import run_daily_audit
+
+            logger.info("running_daily_audit")
+            results["daily_audit"] = await run_daily_audit(db)
+        except Exception as e:
+            logger.error("daily_audit_failed", error=str(e))
+            results["errors"].append(f"daily_audit: {str(e)}")
+
     logger.info("startup_updates_complete", results=results)
     return results
 
@@ -573,6 +602,7 @@ async def run_daily_updates() -> dict:
         "team_stats": None,
         "rosters": None,
         "moneypuck": None,
+        "olympics": None,
         "errors": [],
     }
 
@@ -636,6 +666,24 @@ async def run_daily_updates() -> dict:
         except Exception as e:
             logger.error("moneypuck_update_failed", error=str(e))
             results["errors"].append(f"moneypuck: {str(e)}")
+
+        # Update Olympic hockey data (if tournament is active)
+        try:
+            from backend.src.ingestion.olympics import (
+                is_olympic_tournament_active,
+                refresh_olympic_data,
+                set_last_olympic_update,
+            )
+
+            if is_olympic_tournament_active():
+                logger.info("olympics_tournament_active_daily_update")
+                results["olympics"] = await refresh_olympic_data(db)
+                set_last_olympic_update()
+            else:
+                results["olympics"] = {"skipped": True, "reason": "tournament_not_active"}
+        except Exception as e:
+            logger.error("olympic_update_failed", error=str(e))
+            results["errors"].append(f"olympics: {str(e)}")
 
     logger.info("daily_updates_complete", results=results)
     return results

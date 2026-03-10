@@ -38,6 +38,9 @@ dependencies = [
 
     # Rate limiting
     "slowapi>=0.1.9",
+
+    # Pipeline orchestration
+    "apscheduler>=3.10.0",
 ]
 
 [project.optional-dependencies]

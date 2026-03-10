@@ -29,7 +29,9 @@ When answering questions:
 - Always cite your data sources (e.g., "According to MoneyPuck data..." or "Based on 2023-24 stats...")
 - Distinguish between raw stats and advanced metrics (xG, Corsi, WAR)
 - Be clear about the limitations of the data
-- If you're uncertain, say so rather than making up stats
+- CRITICAL: NEVER make up statistics. Only use stats explicitly provided in the context.
+- If a stat is not provided (like TOI/time on ice), say "data not available" rather than inventing a value
+- When explaining probability differences, use ONLY the stats provided in the context (GP, Goals, Assists, Points, xG, etc.)
 
 For player comparisons:
 - Use per-60 or per-game stats to normalize for ice time
@@ -54,6 +56,11 @@ class QueryType:
     PREDICTION = "prediction"           # "Will the Avs make playoffs?"
     MATCHUP_PREDICTION = "matchup_prediction"  # "Who will score in TOR vs BOS tonight?"
     TONIGHT_PREDICTION = "tonight_prediction"  # "Who should I start tonight?"
+    EDGE_FINDER = "edge_finder"         # "What are the best bets tonight?"
+    REGRESSION = "regression"           # "Who is due for positive regression?"
+    VALUE_BET = "value_bet"             # "Is McDavid +180 good value?"
+    OLYMPICS = "olympics"               # "Olympic standings?" "How is McDavid doing in the Olympics?"
+    SCHEDULE = "schedule"               # "What games are today?" "Who is playing tonight?"
 
 
 class PowerplAICopilot:
@@ -85,6 +92,55 @@ class PowerplAICopilot:
         classification = await self._classify_query(user_query)
         logger.info("query_classified", query=user_query[:50], classification=classification)
 
+        # Check if conversation history has Olympic context (for follow-up questions)
+        has_olympic_context = False
+        olympic_countries_in_history = []
+        olympic_keywords = [
+            "olympic", "parlay", "switzerland", "canada vs", "milano cortina",
+            "quarterfinal", "semifinal", "medal", "gold medal",
+            "czech", "sweden", "finland", "usa vs", "germany",
+            "binnington", "hellebuyck", "genoni",  # Olympic goalies
+            "celebrini", "mcdavid", "crosby", "mackinnon",  # Canadian stars
+            "necas", "pastrnak",  # Czech stars
+        ]
+        if conversation_history:
+            for msg in conversation_history:
+                content = msg.get("content", "").lower()
+                if any(word in content for word in olympic_keywords):
+                    has_olympic_context = True
+                    # Extract countries mentioned
+                    country_map = {
+                        "canada": "CAN", "canadian": "CAN",
+                        "czech": "CZE", "czechia": "CZE",
+                        "usa": "USA", "american": "USA", "united states": "USA",
+                        "sweden": "SWE", "swedish": "SWE",
+                        "finland": "FIN", "finnish": "FIN",
+                        "switzerland": "SUI", "swiss": "SUI",
+                        "germany": "GER", "german": "GER",
+                        "slovakia": "SVK", "slovak": "SVK",
+                    }
+                    for name, code in country_map.items():
+                        if name in content and code not in olympic_countries_in_history:
+                            olympic_countries_in_history.append(code)
+                    break
+
+        # If Olympic context detected, inject it into classification
+        if has_olympic_context and not classification.get("is_olympics_query"):
+            query_lower = user_query.lower()
+            # Trigger on betting terms OR follow-up scorer questions
+            followup_triggers = [
+                "payout", "pay out", "parlay", "odds", "bet", "value",
+                "another", "other", "else", "different", "besides",
+                "scorer", "score", "point", "goal", "who will",
+            ]
+            if any(word in query_lower for word in followup_triggers):
+                classification["is_olympics_query"] = True
+                classification["is_prediction_query"] = True
+                # Inject countries from history
+                if olympic_countries_in_history and not classification.get("countries"):
+                    classification["countries"] = olympic_countries_in_history
+                logger.info("injected_olympic_context_from_history", countries=olympic_countries_in_history)
+
         # Check if this is a vague follow-up query (e.g., "tell me more", "what else", "explain")
         is_followup = self._is_followup_query(user_query)
         if is_followup and conversation_history:
@@ -111,12 +167,26 @@ class PowerplAICopilot:
         # Step 2: Fetch relevant data based on query type
         context_parts = []
 
-        # Check if this is a prediction query
-        if classification.get("is_prediction_query") or classification.get("type") in ("matchup_prediction", "tonight_prediction"):
-            prediction_context = await self._fetch_predictions(db, classification)
-            if prediction_context:
-                context_parts.append(f"## Scoring Predictions\n{prediction_context}")
-                sources.append({"type": "prediction", "data": "scoring_predictions"})
+        # PRIORITY: Check for Olympic betting queries first (parlay, value bets, edges)
+        if classification.get("is_olympics_query") and classification.get("is_edge_query"):
+            value_context = await self._fetch_olympic_value_bet(db, classification)
+            if value_context:
+                context_parts.append(f"## Olympic Value Bet Analysis\n{value_context}")
+                sources.append({"type": "olympic_value", "data": "olympic_bet_calculator"})
+
+        # Check if this is a prediction query (but not Olympic betting - handled above)
+        elif classification.get("is_prediction_query") or classification.get("type") in ("matchup_prediction", "tonight_prediction"):
+            # If Olympics prediction without betting context, use Olympics handler
+            if classification.get("is_olympics_query"):
+                olympics_context = await self._fetch_olympics_data(db, classification)
+                if olympics_context:
+                    context_parts.append(f"## Olympic Hockey - Milano Cortina 2026\n{olympics_context}")
+                    sources.append({"type": "olympics", "data": "milano_cortina_2026"})
+            else:
+                prediction_context = await self._fetch_predictions(db, classification)
+                if prediction_context:
+                    context_parts.append(f"## Scoring Predictions\n{prediction_context}")
+                    sources.append({"type": "prediction", "data": "scoring_predictions"})
 
         # Check if this is a trade query
         elif classification.get("is_trade_query") or classification.get("type") == "trade_suggestion":
@@ -131,6 +201,41 @@ class PowerplAICopilot:
             if value_context:
                 context_parts.append(f"## Value Analysis\n{value_context}")
                 sources.append({"type": "value", "data": "salary_cap"})
+
+        # Check if this is an Olympic value bet query (backup - in case first check missed)
+        elif classification.get("is_edge_query") and classification.get("is_olympics_query"):
+            value_context = await self._fetch_olympic_value_bet(db, classification)
+            if value_context:
+                context_parts.append(f"## Olympic Value Bet Analysis\n{value_context}")
+                sources.append({"type": "olympic_value", "data": "olympic_bet_calculator"})
+
+        # Check if this is an edge finder query (best bets tonight)
+        elif classification.get("is_edge_query") or classification.get("type") == "edge_finder":
+            edge_context = await self._fetch_edge_analysis(db, classification)
+            if edge_context:
+                context_parts.append(f"## Betting Edge Analysis\n{edge_context}")
+                sources.append({"type": "edges", "data": "edge_finder"})
+
+        # Check if this is a regression query (xG underperformers/overperformers)
+        elif classification.get("is_regression_query") or classification.get("type") == "regression":
+            regression_context = await self._fetch_regression_analysis(db, classification)
+            if regression_context:
+                context_parts.append(f"## xG Regression Analysis\n{regression_context}")
+                sources.append({"type": "regression", "data": "xg_regression"})
+
+        # Check if this is an Olympics query
+        elif classification.get("is_olympics_query") or classification.get("type") == "olympics":
+            olympics_context = await self._fetch_olympics_data(db, classification)
+            if olympics_context:
+                context_parts.append(f"## Olympic Hockey - Milano Cortina 2026\n{olympics_context}")
+                sources.append({"type": "olympics", "data": "milano_cortina_2026"})
+
+        # Check if this is a schedule query (what games are today)
+        elif classification.get("is_schedule_query") or classification.get("type") == "schedule":
+            schedule_context = await self._fetch_todays_schedule(db, classification)
+            if schedule_context:
+                context_parts.append(f"## Today's Games\n{schedule_context}")
+                sources.append({"type": "schedule", "data": "todays_games"})
 
         # Check if this is an all-teams breakdown query (e.g., "top 3 on each team")
         elif classification.get("is_all_teams_query"):
@@ -176,14 +281,25 @@ class PowerplAICopilot:
 
         # Get RAG context for additional knowledge
         if include_rag:
-            rag_results = await rag_service.search(db, user_query, limit=3)
+            # Pass query type for strategy-aware retrieval
+            rag_results = await rag_service.search(
+                db, user_query, limit=3,
+                query_type=classification.get("type"),
+            )
             if rag_results:
+                # Format with citations for transparent sourcing
                 rag_context = "\n\n".join([
-                    f"### {doc['title'] or 'Document'} (source: {doc['source']})\n{doc['content'][:500]}..."
+                    f"### {doc['title'] or 'Document'} (source: {doc['source']})\n"
+                    f"{doc['content']}\n"
+                    f"*Citation: {doc.get('citation', '')}*"
                     for doc in rag_results
                 ])
                 context_parts.append(f"## Related Analysis\n{rag_context}")
-                sources.append({"type": "rag", "data": rag_results})
+                sources.append({
+                    "type": "rag",
+                    "data": rag_results,
+                    "citations": [doc.get("citation", "") for doc in rag_results],
+                })
 
         # Step 3: Generate response with Claude
         context = "\n\n".join(context_parts) if context_parts else "No specific data found in database."
@@ -210,9 +326,10 @@ Query: "{query}"
 
 Respond with JSON only:
 {{
-    "type": "stats_lookup" | "comparison" | "trend_analysis" | "explainer" | "prediction" | "leaders" | "team_breakdown" | "matchup_prediction" | "tonight_prediction" | "trade_suggestion" | "value_comparison",
+    "type": "stats_lookup" | "comparison" | "trend_analysis" | "explainer" | "prediction" | "leaders" | "team_breakdown" | "matchup_prediction" | "tonight_prediction" | "trade_suggestion" | "value_comparison" | "edge_finder" | "regression" | "value_bet" | "olympics" | "schedule",
     "players": ["player names mentioned"],
     "teams": ["team names or abbreviations - convert full names to abbreviations like TOR, BOS, EDM"],
+    "countries": ["country names for Olympics - CAN, USA, SWE, FIN, RUS, CZE, SUI, GER, SVK, etc."],
     "stats": ["specific stats mentioned like goals, xG, corsi"],
     "timeframe": "current season" | "career" | "tonight" | "tomorrow" | "monday" | "tuesday" | "wednesday" | "thursday" | "friday" | "saturday" | "sunday" | "this week" | "feb 3" | "january 15" | null,
     "is_leaders_query": true if asking about league leaders/top players/who leads in a stat,
@@ -221,7 +338,12 @@ Respond with JSON only:
     "is_tonight_query": true if asking about tonight's games, today's games, tomorrow's games, or upcoming games without specific teams,
     "is_trade_query": true if asking about trades, trade value, who to trade for, trade targets, or package deals,
     "is_value_query": true if asking about value, salary cap, contract, best value, points per dollar, cap hit, or cost efficiency,
-    "top_n": number if asking for top N players (e.g. "top 3" = 3, "top 5" = 5)
+    "is_edge_query": true if asking about edges, best bets, betting opportunities, value bets, or +EV plays,
+    "is_regression_query": true if asking about regression, xG regression, due for goals, underperforming, overperforming, or shooting luck,
+    "is_olympics_query": true if asking about Olympics, Olympic hockey, Team Canada/USA/Sweden, Milano Cortina 2026, or Olympic standings/stats,
+    "is_schedule_query": true if asking about games today, tonight, what's playing, schedule, matchups,
+    "top_n": number if asking for top N players (e.g. "top 3" = 3, "top 5" = 5),
+    "offered_odds": number if asking about a specific bet with odds (e.g. "+210" = 210, "-150" = -150)
 }}
 
 Examples:
@@ -229,7 +351,9 @@ Examples:
 - "Who should I start tonight?" -> type: "tonight_prediction", is_prediction_query: true, is_tonight_query: true
 - "Predictions for Edmonton vs Calgary" -> type: "matchup_prediction", teams: ["EDM", "CGY"], is_prediction_query: true
 - "Who is going to score in the leafs game tomorrow?" -> type: "matchup_prediction", teams: ["TOR"], is_prediction_query: true, timeframe: "tomorrow"
-- "Best bets for Monday's games" -> type: "tonight_prediction", is_prediction_query: true, is_tonight_query: true, timeframe: "monday"
+- "Best bets for Monday's games" -> type: "edge_finder", is_edge_query: true, is_tonight_query: true, timeframe: "monday"
+- "What are the best edges tonight?" -> type: "edge_finder", is_edge_query: true, is_tonight_query: true
+- "Any +EV plays tonight?" -> type: "value_bet", is_edge_query: true, is_tonight_query: true
 - "Who is most likely to score on Tuesday?" -> type: "tonight_prediction", is_prediction_query: true, is_tonight_query: true, timeframe: "tuesday"
 - "Who will score on Feb 3rd?" -> type: "tonight_prediction", is_prediction_query: true, is_tonight_query: true, timeframe: "feb 3"
 - "Who should I start this week?" -> type: "tonight_prediction", is_prediction_query: true
@@ -239,7 +363,32 @@ Examples:
 - "Who is better value, Cuylle or Matthews?" -> type: "value_comparison", players: ["Cuylle", "Matthews"], is_value_query: true
 - "Best value players in the league" -> type: "value_comparison", is_value_query: true, is_leaders_query: true
 - "Points per dollar leaders" -> type: "value_comparison", is_value_query: true, is_leaders_query: true
-- "What's McDavid's cap hit?" -> type: "value_comparison", players: ["McDavid"], is_value_query: true"""
+- "What's McDavid's cap hit?" -> type: "value_comparison", players: ["McDavid"], is_value_query: true
+- "Who is due for positive regression?" -> type: "regression", is_regression_query: true
+- "Players underperforming their xG?" -> type: "regression", is_regression_query: true
+- "Is McDavid overperforming?" -> type: "regression", players: ["McDavid"], is_regression_query: true
+- "Shooting luck leaders" -> type: "regression", is_regression_query: true, is_leaders_query: true
+- "Is Matthews +180 good value?" -> type: "value_bet", players: ["Matthews"], is_edge_query: true
+- "Is Celebrini +210 good value against Switzerland?" -> type: "value_bet", players: ["Celebrini"], countries: ["SUI"], is_edge_query: true, is_olympics_query: true, offered_odds: 210
+- "McDavid anytime scorer +150 vs Czech Republic" -> type: "value_bet", players: ["McDavid"], countries: ["CZE"], is_edge_query: true, is_olympics_query: true, offered_odds: 150
+- "Olympic standings?" -> type: "olympics", is_olympics_query: true
+- "How is Canada doing in the Olympics?" -> type: "olympics", countries: ["CAN"], is_olympics_query: true
+- "Olympic scoring leaders?" -> type: "olympics", is_olympics_query: true, is_leaders_query: true
+- "How is McDavid doing in the Olympics?" -> type: "olympics", players: ["McDavid"], is_olympics_query: true
+- "Who is leading the Olympics in goals?" -> type: "olympics", is_olympics_query: true, is_leaders_query: true
+- "Sweden vs Finland Olympic game?" -> type: "olympics", countries: ["SWE", "FIN"], is_olympics_query: true
+- "Who will score in Canada vs USA Olympic game?" -> type: "olympics", countries: ["CAN", "USA"], is_olympics_query: true, is_prediction_query: true
+- "Predictions for Sweden vs Finland Olympics" -> type: "olympics", countries: ["SWE", "FIN"], is_olympics_query: true, is_prediction_query: true
+- "Olympic predictions for the gold medal game?" -> type: "olympics", is_olympics_query: true, is_prediction_query: true
+- "Why does McDavid have higher goal probability than MacKinnon in the Olympic game?" -> type: "olympics", players: ["McDavid", "MacKinnon"], is_olympics_query: true, is_prediction_query: true
+- "Explain the goal probability for Canada vs Switzerland" -> type: "olympics", countries: ["CAN", "SUI"], is_olympics_query: true, is_prediction_query: true
+- "Why is player X more likely to score than player Y in the Olympics?" -> type: "olympics", is_olympics_query: true, is_prediction_query: true
+- "How is the Olympic goal probability calculated?" -> type: "olympics", is_olympics_query: true, is_prediction_query: true
+- "What games are today?" -> type: "schedule", is_schedule_query: true
+- "Who is playing tonight?" -> type: "schedule", is_schedule_query: true
+- "Any games on right now?" -> type: "schedule", is_schedule_query: true
+- "What's the schedule for today?" -> type: "schedule", is_schedule_query: true
+- "Which teams play tonight?" -> type: "schedule", is_schedule_query: true"""
                 }
             ],
         )
@@ -1116,6 +1265,712 @@ Examples:
 
         return "\n".join(lines)
 
+    async def _fetch_edge_analysis(
+        self,
+        db: AsyncSession,
+        classification: dict,
+    ) -> str | None:
+        """Fetch betting edge analysis for tonight's games."""
+        from backend.src.agents.edge_finder import EdgeFinder
+
+        finder = EdgeFinder(db)
+        report = await finder.find_tonight_edges(min_grade="B+", max_results=10)
+
+        if not report.top_edges:
+            return "No games scheduled tonight or no significant edges found."
+
+        lines = []
+        lines.append(f"**Tonight's Betting Edges** ({report.game_count} games analyzed)\n")
+        lines.append(f"Found {report.edges_found} opportunities: {report.a_plus_edges} A+, {report.a_edges} A, {report.b_plus_edges} B+\n")
+
+        lines.append("| Player | Team | Opp | Grade | P(Goal) | Key Edge |")
+        lines.append("|--------|------|-----|-------|---------|----------|")
+
+        for edge in report.top_edges[:10]:
+            key_factor = edge.edge_factors[0].description if edge.edge_factors else "Multiple factors"
+            # Truncate long descriptions
+            if len(key_factor) > 40:
+                key_factor = key_factor[:37] + "..."
+            lines.append(
+                f"| {edge.player_name} | {edge.team} | {edge.opponent} | "
+                f"**{edge.edge_grade}** | {edge.prob_goal:.1%} | {key_factor} |"
+            )
+
+        lines.append("\n**Edge Types Explained:**")
+        lines.append("- Hot Streak: Recent form significantly above season average")
+        lines.append("- Weak Goalie: Opponent goalie below .895 SV%")
+        lines.append("- High Pace: Expected 6.5+ total goals in game")
+        lines.append("- xG Regression: Goals significantly below expected (due for more)")
+        lines.append("- Home Cooking: Strong home/away splits")
+
+        return "\n".join(lines)
+
+    async def _fetch_olympic_value_bet(
+        self,
+        db: AsyncSession,
+        classification: dict,
+    ) -> str | None:
+        """
+        Analyze a value bet for an Olympic hockey game.
+
+        Combines:
+        - Player's NHL stats (current season)
+        - Olympic matchup context (goalie, team strength)
+        - Offered odds from the query
+        - Clear +EV calculation
+        """
+        import math
+        from backend.src.ingestion.olympics import (
+            get_current_olympic_data,
+            get_country_code,
+        )
+
+        players = classification.get("players", [])
+        countries = classification.get("countries", [])
+        offered_odds = classification.get("offered_odds")
+
+        # If no specific player, provide parlay/multi-game analysis
+        if not players:
+            return await self._fetch_olympic_parlay_analysis(db, classification)
+
+        player_name = players[0]
+        lines = []
+
+        # Get player's NHL stats
+        result = await db.execute(
+            text("""
+                SELECT p.name, p.team_abbrev, p.position,
+                       s.goals, s.assists, s.points, s.games_played, s.xg
+                FROM players p
+                JOIN player_season_stats s ON p.id = s.player_id
+                WHERE p.name ILIKE :name
+                  AND s.season = (SELECT MAX(season) FROM player_season_stats)
+                LIMIT 1
+            """),
+            {"name": f"%{player_name}%"}
+        )
+        row = result.fetchone()
+
+        if not row:
+            return f"Could not find NHL stats for {player_name}."
+
+        # Calculate NHL metrics
+        nhl_gpg = row.goals / row.games_played if row.games_played > 0 else 0
+        nhl_ppg = row.points / row.games_played if row.games_played > 0 else 0
+        xg = row.xg if row.xg else row.goals  # Fallback if no xG
+
+        lines.append(f"## {row.name} Value Bet Analysis\n")
+        lines.append(f"**NHL 2025-26 Stats:** {row.goals}G, {row.assists}A, {row.points}P in {row.games_played} GP ({row.team_abbrev})")
+        lines.append(f"- Goals per game: **{nhl_gpg:.3f}** ({nhl_gpg*82:.0f} goal pace)")
+        lines.append(f"- xG: {xg:.1f} (Actual vs xG: {row.goals - xg:+.1f})")
+        lines.append("")
+
+        # Get Olympic context
+        olympic_data = get_current_olympic_data()
+
+        # Determine opponent country - convert name to code if needed
+        opponent_code = None
+        opponent_country = None
+        opponent_goalie = None
+        player_country = None
+
+        # Map country names to codes
+        name_to_code = {
+            "SWITZERLAND": "SUI", "SUI": "SUI",
+            "CZECHIA": "CZE", "CZECH REPUBLIC": "CZE", "CZE": "CZE",
+            "UNITED STATES": "USA", "USA": "USA", "AMERICA": "USA",
+            "CANADA": "CAN", "CAN": "CAN",
+            "SWEDEN": "SWE", "SWE": "SWE",
+            "FINLAND": "FIN", "FIN": "FIN",
+            "GERMANY": "GER", "GER": "GER",
+            "SLOVAKIA": "SVK", "SVK": "SVK",
+            "FRANCE": "FRA", "FRA": "FRA",
+            "DENMARK": "DEN", "DEN": "DEN",
+            "LATVIA": "LAT", "LAT": "LAT",
+            "ITALY": "ITA", "ITA": "ITA",
+            "NORWAY": "NOR", "NOR": "NOR",
+        }
+        code_to_name = {"SUI": "Switzerland", "CZE": "Czechia", "USA": "United States",
+                       "CAN": "Canada", "SWE": "Sweden", "FIN": "Finland", "GER": "Germany",
+                       "SVK": "Slovakia", "FRA": "France", "DEN": "Denmark", "LAT": "Latvia",
+                       "ITA": "Italy", "NOR": "Norway"}
+
+        # Convert all countries to codes
+        country_codes = []
+        for c in countries:
+            code = name_to_code.get(c.upper(), c.upper())
+            country_codes.append(code)
+
+        # Determine player's Olympic team based on their NHL team
+        # Canadian NHL players play for Canada, American for USA, etc.
+        nhl_team_to_olympic = {
+            # Canadian teams -> CAN
+            "TOR": "CAN", "MTL": "CAN", "OTT": "CAN", "CGY": "CAN", "EDM": "CAN",
+            "VAN": "CAN", "WPG": "CAN",
+            # US teams - could be USA or other, default to checking name
+        }
+
+        # Most North American players: Canadian-born -> CAN, American-born -> USA
+        # For simplicity, if query mentions "against X", X is the opponent
+        # If two countries mentioned, the one that's NOT CAN/USA is likely the opponent
+        # for a North American player
+
+        if len(country_codes) >= 2:
+            # If one is CAN/USA and other isn't, the non-CAN/USA is likely opponent
+            if "CAN" in country_codes or "USA" in country_codes:
+                for code in country_codes:
+                    if code not in ("CAN", "USA"):
+                        opponent_code = code
+                        break
+            if not opponent_code:
+                # Both are CAN/USA or neither, use second one
+                opponent_code = country_codes[1]
+        elif len(country_codes) == 1:
+            opponent_code = country_codes[0]
+
+        if opponent_code:
+            opponent_country = code_to_name.get(opponent_code, opponent_code)
+
+            # Find opponent goalie
+            for goalie in olympic_data.get("goalie_leaders", []):
+                if goalie["country"] == opponent_code:
+                    opponent_goalie = goalie
+                    break
+
+        # Calculate expected goals for this game
+        base_expected = nhl_gpg * 0.85  # Tournament discount
+
+        goalie_adj = 0.0
+        if opponent_goalie:
+            sv_pct = opponent_goalie.get("sv", 0.905)
+            sv_diff = 0.905 - sv_pct  # League avg is ~.905
+            goalie_adj = sv_diff * 0.5  # Each 1% better = -0.5% expected goals
+            lines.append(f"**Opponent Goalie:** {opponent_goalie['name']} ({opponent_country})")
+            lines.append(f"- Save %: {sv_pct:.3f} | GAA: {opponent_goalie.get('gaa', 0):.2f}")
+            if sv_pct > 0.940:
+                lines.append(f"- **ELITE GOALIE** - Significantly reduces scoring chances")
+            elif sv_pct < 0.900:
+                lines.append(f"- **WEAK GOALIE** - Good matchup for scorers")
+            lines.append("")
+
+        adjusted_expected = max(0.05, base_expected + goalie_adj)
+
+        # Probability calculation (Poisson)
+        prob_goal = 1 - math.exp(-adjusted_expected)
+
+        lines.append(f"**Model Probability:** {prob_goal*100:.1f}% chance to score")
+        lines.append(f"- Base (NHL rate adjusted): {base_expected:.3f} expected goals")
+        lines.append(f"- Goalie adjustment: {goalie_adj:+.3f}")
+        lines.append(f"- Final expected goals: {adjusted_expected:.3f}")
+        lines.append("")
+
+        # Value calculation
+        if offered_odds:
+            if offered_odds > 0:
+                implied_prob = 100 / (offered_odds + 100)
+            else:
+                implied_prob = abs(offered_odds) / (abs(offered_odds) + 100)
+
+            edge = prob_goal - implied_prob
+
+            lines.append(f"**Odds Analysis:**")
+            lines.append(f"- Offered odds: **+{offered_odds}** (implied {implied_prob*100:.1f}%)")
+            lines.append(f"- Model probability: **{prob_goal*100:.1f}%**")
+            lines.append(f"- Edge: **{edge*100:+.1f}%**")
+            lines.append("")
+
+            if edge > 0.05:
+                ev = (prob_goal * (offered_odds/100)) - (1 - prob_goal)
+                lines.append(f"**VERDICT: GOOD VALUE** - {ev*100:.1f}% expected ROI")
+                lines.append(f"Recommendation: BET - You have a {edge*100:.1f}% edge over the market")
+            elif edge > 0.02:
+                lines.append(f"**VERDICT: MARGINAL VALUE** - Small edge of {edge*100:.1f}%")
+                lines.append(f"Recommendation: Small bet only, high variance")
+            elif edge > -0.02:
+                lines.append(f"**VERDICT: FAIR PRICE** - No significant edge either way")
+                lines.append(f"Recommendation: PASS - Look for better opportunities")
+            else:
+                lines.append(f"**VERDICT: NO VALUE** - Market has you beat by {abs(edge)*100:.1f}%")
+                lines.append(f"Recommendation: DO NOT BET at these odds")
+
+            # Show breakeven
+            if prob_goal >= 0.5:
+                breakeven_odds = int(-100 * prob_goal / (1 - prob_goal))
+            else:
+                breakeven_odds = int(100 * (1 - prob_goal) / prob_goal)
+            lines.append(f"\nBreakeven odds: {'+' if breakeven_odds > 0 else ''}{breakeven_odds}")
+        else:
+            lines.append("**Note:** Specify the offered odds (e.g., '+210') for a complete value analysis")
+
+        return "\n".join(lines)
+
+    async def _fetch_olympic_parlay_analysis(
+        self,
+        db: AsyncSession,
+        classification: dict,
+    ) -> str | None:
+        """
+        Analyze Olympic games for parlay betting opportunities.
+
+        Fetches all upcoming games and identifies best scoring opportunities.
+        """
+        import math
+        from backend.src.ingestion.olympics import (
+            get_current_olympic_data,
+            predict_olympic_game,
+        )
+
+        olympic_data = get_current_olympic_data()
+        upcoming_games = olympic_data.get("upcoming_games", [])
+
+        if not upcoming_games:
+            return "No upcoming Olympic games found in the schedule."
+
+        lines = []
+        lines.append("## Olympic Parlay Analysis\n")
+        lines.append("**IMPORTANT:** No bet is ever 'guaranteed'. These are statistical probabilities, not certainties.\n")
+
+        all_predictions = []
+
+        # Get predictions for each upcoming game
+        for game in upcoming_games:
+            try:
+                pred = await predict_olympic_game(
+                    db, game["home"], game["away"], game.get("round", "group")
+                )
+
+                for player in pred.get("top_scorers", [])[:3]:
+                    all_predictions.append({
+                        "player": player["player_name"],
+                        "country": player.get("country_code") or player.get("country"),
+                        "opponent": player["opponent_code"],
+                        "prob_goal": player["prob_goal"],
+                        "prob_point": player["prob_point"],
+                        "confidence": player.get("confidence", "medium"),
+                        "game": f"{game['away']} @ {game['home']}",
+                    })
+            except Exception as e:
+                logger.warning("olympic_prediction_failed", game=game, error=str(e))
+                continue
+
+        if not all_predictions:
+            return "Could not generate predictions for Olympic games."
+
+        # Sort by goal probability
+        all_predictions.sort(key=lambda x: x["prob_goal"], reverse=True)
+
+        # Best individual picks
+        lines.append("### Top Scoring Probabilities\n")
+        lines.append("| Player | Team | vs | P(Goal) | P(Point) | Game |")
+        lines.append("|--------|------|-----|---------|----------|------|")
+
+        for pred in all_predictions[:8]:
+            lines.append(
+                f"| **{pred['player']}** | {pred['country']} | {pred['opponent']} | "
+                f"{pred['prob_goal']*100:.0f}% | {pred['prob_point']*100:.0f}% | {pred['game']} |"
+            )
+
+        # Suggested parlay (top 3 by probability)
+        lines.append("\n### Suggested 3-Leg Parlay (Highest Probability)\n")
+
+        top_3 = all_predictions[:3]
+        if len(top_3) >= 3:
+            # Calculate combined probability
+            combined_prob = 1.0
+            for p in top_3:
+                combined_prob *= p["prob_goal"]
+
+            lines.append("**Anytime Scorer Parlay:**")
+            for i, pred in enumerate(top_3, 1):
+                lines.append(f"{i}. **{pred['player']}** ({pred['country']}) to score vs {pred['opponent']} - {pred['prob_goal']*100:.0f}%")
+
+            lines.append(f"\n**Combined Probability:** {combined_prob*100:.1f}%")
+
+            # Estimate fair parlay odds
+            if combined_prob > 0:
+                if combined_prob >= 0.5:
+                    fair_odds = int(-100 * combined_prob / (1 - combined_prob))
+                else:
+                    fair_odds = int(100 * (1 - combined_prob) / combined_prob)
+                lines.append(f"**Fair Odds:** {'+' if fair_odds > 0 else ''}{fair_odds}")
+
+            lines.append("\n**Note:** Actual parlay odds from sportsbooks will be lower due to vig. This parlay has ~{:.0f}% chance of hitting.".format(combined_prob*100))
+
+        # Alternative: Point parlay (higher probability)
+        lines.append("\n### Alternative: Point Parlay (Higher Hit Rate)\n")
+        top_3_points = sorted(all_predictions[:6], key=lambda x: x["prob_point"], reverse=True)[:3]
+
+        if len(top_3_points) >= 3:
+            combined_point_prob = 1.0
+            for p in top_3_points:
+                combined_point_prob *= p["prob_point"]
+
+            lines.append("**1+ Point Each:**")
+            for i, pred in enumerate(top_3_points, 1):
+                lines.append(f"{i}. **{pred['player']}** ({pred['country']}) 1+ points vs {pred['opponent']} - {pred['prob_point']*100:.0f}%")
+
+            lines.append(f"\n**Combined Probability:** {combined_point_prob*100:.1f}%")
+
+            # Calculate fair odds and estimated payout for points parlay
+            if combined_point_prob > 0:
+                if combined_point_prob >= 0.5:
+                    point_fair_odds = int(-100 * combined_point_prob / (1 - combined_point_prob))
+                else:
+                    point_fair_odds = int(100 * (1 - combined_point_prob) / combined_point_prob)
+                lines.append(f"**Fair Odds:** {'+' if point_fair_odds > 0 else ''}{point_fair_odds}")
+
+                # Estimate payout (assuming ~10% vig reduction)
+                actual_odds_est = int(point_fair_odds * 0.90) if point_fair_odds > 0 else int(point_fair_odds * 1.10)
+                if actual_odds_est > 0:
+                    payout_per_100 = actual_odds_est
+                else:
+                    payout_per_100 = int(10000 / abs(actual_odds_est))
+                lines.append(f"**Estimated Payout:** ~${100 + payout_per_100} on $100 bet (${payout_per_100} profit)")
+
+        lines.append("\n**Disclaimer:** Past performance doesn't guarantee future results. Bet responsibly.")
+
+        return "\n".join(lines)
+
+    async def _fetch_regression_analysis(
+        self,
+        db: AsyncSession,
+        classification: dict,
+    ) -> str | None:
+        """Fetch xG regression analysis."""
+        from backend.src.agents.regression_tracker import RegressionTracker
+
+        tracker = RegressionTracker(db)
+        players = classification.get("players", [])
+
+        if players:
+            # Single player regression analysis
+            lines = []
+            for player_name in players:
+                result = await tracker.get_player_regression_analysis(player_name)
+                if result:
+                    lines.append(f"**{result.player_name}** ({result.team})\n")
+                    lines.append(f"- Goals: {result.goals} | xG: {result.xg:.1f} | Differential: {result.differential:+.1f}")
+                    lines.append(f"- Shooting %: {result.shooting_pct:.1%} (Expected: {result.expected_shooting_pct:.1%})")
+                    lines.append(f"- Regression Type: **{result.regression_type.upper()}**")
+                    lines.append(f"- Recommendation: {result.bet_recommendation}")
+                    lines.append(f"- Confidence: {result.regression_confidence} ({result.games_played} games)")
+                    lines.append("")
+            return "\n".join(lines) if lines else None
+
+        # League-wide regression report
+        report = await tracker.get_regression_report(top_n=10)
+
+        if not report.positive_regression and not report.negative_regression:
+            return "Insufficient data for regression analysis."
+
+        lines = []
+        lines.append(f"**xG Regression Report** (Analyzed {report.total_analyzed} players)\n")
+
+        if report.positive_regression:
+            lines.append("**🎯 POSITIVE REGRESSION CANDIDATES** (Due for MORE goals - BET ON)\n")
+            lines.append("| Player | Team | Goals | xG | Diff | Recommendation |")
+            lines.append("|--------|------|-------|-----|------|----------------|")
+            for c in report.positive_regression[:7]:
+                lines.append(
+                    f"| {c.player_name} | {c.team} | {c.goals} | {c.xg:.1f} | "
+                    f"**{c.differential:+.1f}** | {c.bet_recommendation.split('-')[0].strip()} |"
+                )
+
+        if report.negative_regression:
+            lines.append("\n**⚠️ NEGATIVE REGRESSION CANDIDATES** (Due for FEWER goals - FADE)\n")
+            lines.append("| Player | Team | Goals | xG | Diff | Recommendation |")
+            lines.append("|--------|------|-------|-----|------|----------------|")
+            for c in report.negative_regression[:5]:
+                lines.append(
+                    f"| {c.player_name} | {c.team} | {c.goals} | {c.xg:.1f} | "
+                    f"**{c.differential:+.1f}** | {c.bet_recommendation.split('-')[0].strip()} |"
+                )
+
+        lines.append("\n**How to use this:**")
+        lines.append("- Positive regression candidates are statistically 'due' for more goals")
+        lines.append("- The larger the negative differential, the stronger the signal")
+        lines.append("- Combine with tonight's edges for best results")
+
+        return "\n".join(lines)
+
+    async def _fetch_olympics_data(
+        self,
+        db: AsyncSession,
+        classification: dict,
+    ) -> str | None:
+        """Fetch Olympic hockey data for Milano Cortina 2026."""
+        from backend.src.ingestion.olympics import (
+            get_current_olympic_data,
+            predict_olympic_game,
+            get_country_code,
+            get_country_name,
+        )
+
+        data = get_current_olympic_data()
+        players = classification.get("players", [])
+        countries = classification.get("countries", [])
+        is_leaders = classification.get("is_leaders_query", False)
+        is_prediction = classification.get("is_prediction_query", False)
+
+        lines = []
+        lines.append("**Milano Cortina 2026 Winter Olympics - Men's Hockey**\n")
+
+        # If asking for predictions - handle both two-country and single-country queries
+        if is_prediction and len(countries) >= 1:
+            # If only one country mentioned, try to find opponent from upcoming games
+            if len(countries) == 1:
+                country_code = get_country_code(countries[0])
+                # Look for upcoming game involving this country
+                for game in data.get("upcoming_games", []):
+                    if game.get("home") == country_code:
+                        countries.append(game.get("away"))
+                        break
+                    elif game.get("away") == country_code:
+                        countries.insert(0, game.get("home"))
+                        break
+                # If still only one country, default to a common opponent for demo
+                if len(countries) == 1:
+                    # Default matchups for common queries
+                    default_opponents = {"CAN": "CZE", "USA": "GER", "SWE": "LAT", "FIN": "SVK"}
+                    opponent = default_opponents.get(country_code, "USA")
+                    countries.append(opponent)
+                    logger.info("inferred_olympic_opponent", country=country_code, opponent=opponent)
+
+        if is_prediction and len(countries) >= 2:
+            try:
+                prediction = await predict_olympic_game(
+                    db, countries[0], countries[1], "group"
+                )
+                lines.append(f"### {prediction['game']['home_country']} vs {prediction['game']['away_country']} Predictions\n")
+
+                context = prediction.get("matchup_context", {})
+                if context.get("home_goalie") or context.get("away_goalie"):
+                    lines.append("**Goalie Matchup (Key Factor - 2x Weight in Olympics):**")
+                    if context.get("home_goalie"):
+                        hg = context["home_goalie"]
+                        sv_pct = hg.get('save_pct') or hg.get('sv') or 0
+                        gaa = hg.get('gaa', 0)
+                        lines.append(f"- {prediction['game']['home_country']}: **{hg.get('name', 'Unknown')}** ({sv_pct:.3f} SV%, {gaa:.2f} GAA)")
+                    if context.get("away_goalie"):
+                        ag = context["away_goalie"]
+                        sv_pct = ag.get('save_pct') or ag.get('sv') or 0
+                        gaa = ag.get('gaa', 0)
+                        lines.append(f"- {prediction['game']['away_country']}: **{ag.get('name', 'Unknown')}** ({sv_pct:.3f} SV%, {gaa:.2f} GAA)")
+                        # Add warning if goalie has elite stats (explains low probabilities)
+                        if sv_pct > 0.940:
+                            lines.append(f"  ⚠️ **Elite goalie alert:** {ag.get('name')}'s {sv_pct:.3f} SV% significantly reduces goal probabilities")
+                    lines.append("")
+
+                # Combine all players and sort by goal probability
+                all_players = prediction.get("home_players", []) + prediction.get("away_players", [])
+                by_goal = sorted(all_players, key=lambda x: x.get("prob_goal", 0), reverse=True)
+                by_point = sorted(all_players, key=lambda x: x.get("prob_point", 0), reverse=True)
+
+                lines.append("**GOAL PROBABILITY RANKINGS (all players):**")
+                for i, pred in enumerate(by_goal, 1):
+                    prob_pct = pred.get("prob_goal", 0) * 100
+                    lines.append(
+                        f"{i:2}. [{pred.get('country_code', '?')}] **{pred['player_name']}** - "
+                        f"{prob_pct:.1f}% goal ({pred.get('olympic_gp', 0)}GP, {pred.get('olympic_goals', 0)}G)"
+                    )
+
+                lines.append("")
+                lines.append("**POINT PROBABILITY RANKINGS (all players):**")
+                for i, pred in enumerate(by_point, 1):
+                    prob_pct = pred.get("prob_point", 0) * 100
+                    lines.append(
+                        f"{i:2}. [{pred.get('country_code', '?')}] **{pred['player_name']}** - "
+                        f"{prob_pct:.1f}% point ({pred.get('olympic_points', 0)}P in {pred.get('olympic_gp', 0)}GP)"
+                    )
+
+                lines.append("")
+                lines.append("**QUICK REFERENCE:**")
+                lines.append(f"- Total players in model: {len(all_players)}")
+                lines.append(f"- {prediction['game']['home_country']} players: {len(prediction.get('home_players', []))}")
+                lines.append(f"- {prediction['game']['away_country']} players: {len(prediction.get('away_players', []))}")
+
+                lines.append("\n**Model Explanation:**")
+                lines.append("Probability = (NHL PPG × 0.45) + (Olympic PPG × 0.20) + goalie adjustment + team strength")
+                lines.append("- Higher **Olympic PPG** boosts probability (rewards tournament form)")
+                lines.append("- **Elite goalies** (>0.940 SV%) significantly REDUCE goal probabilities")
+                lines.append("- A player with high NHL GPG but facing an elite goalie will have lower probability than expected")
+                lines.append("")
+                lines.append("**Why Olympic Predictions Are Different:**")
+                lines.append("- Goalie matchup weighted **2x higher** than NHL model (short tournament = hot goalie dominates)")
+                lines.append("- In-tournament form matters more than season stats")
+                lines.append("- Elimination games apply pressure coefficients")
+
+                lines.append("\n**IMPORTANT:** Stats available: GP, Goals, Assists, Points, xG, PPG, GPG only.")
+                lines.append("TOI (time on ice) is NOT available in this context - do not reference or estimate it.")
+
+                return "\n".join(lines)
+            except Exception as e:
+                logger.warning("olympic_prediction_failed", error=str(e))
+
+        # If asking about specific player
+        if players:
+            for player_name in players:
+                # Check Olympic scoring leaders
+                for leader in data["scoring_leaders"]:
+                    if player_name.lower() in leader["name"].lower():
+                        lines.append(f"**{leader['name']}** ({leader['country']})")
+                        lines.append(f"- Olympic Stats: {leader['g']}G, {leader['a']}A, {leader['pts']}P in {leader['gp']} GP")
+
+                        # Also get NHL stats for comparison
+                        result = await db.execute(
+                            text("""
+                                SELECT p.name, p.team_abbrev, s.goals, s.assists, s.points, s.games_played
+                                FROM players p
+                                JOIN player_season_stats s ON p.id = s.player_id
+                                WHERE p.name ILIKE :name
+                                  AND s.season = (SELECT MAX(season) FROM player_season_stats)
+                                LIMIT 1
+                            """),
+                            {"name": f"%{player_name}%"}
+                        )
+                        row = result.fetchone()
+                        if row:
+                            lines.append(f"- NHL Stats (2025-26): {row.goals}G, {row.assists}A, {row.points}P in {row.games_played} GP ({row.team_abbrev})")
+                        lines.append("")
+                        break
+
+                # Check goalies
+                for goalie in data["goalie_leaders"]:
+                    if player_name.lower() in goalie["name"].lower():
+                        lines.append(f"**{goalie['name']}** ({goalie['country']}) - Goalie")
+                        lines.append(f"- Olympic Stats: {goalie['w']}W, {goalie['gaa']:.2f} GAA, {goalie['sv']:.3f} SV%")
+                        lines.append("")
+                        break
+
+            return "\n".join(lines) if len(lines) > 2 else None
+
+        # If asking about specific country
+        if countries:
+            for country_code in countries:
+                for group, teams in data["standings"].items():
+                    for team in teams:
+                        if team["code"] == country_code.upper() or team["country"].upper() == country_code.upper():
+                            lines.append(f"**{team['country']}** (Group {group})")
+                            lines.append(f"- Record: {team['w']}W-{team['l']}L ({team['pts']} pts)")
+                            lines.append(f"- Goal Diff: {team.get('gf', 0)} GF, {team.get('ga', 0)} GA")
+
+                            # Find players from this country
+                            country_players = [p for p in data["scoring_leaders"] if p["country"] == team["code"]]
+                            if country_players:
+                                lines.append(f"- Top Scorer: {country_players[0]['name']} ({country_players[0]['pts']} pts)")
+
+                            # Find goalie
+                            country_goalies = [g for g in data["goalie_leaders"] if g["country"] == team["code"]]
+                            if country_goalies:
+                                g = country_goalies[0]
+                                lines.append(f"- Starting Goalie: {g['name']} ({g['sv']:.3f} SV%)")
+                            lines.append("")
+
+            return "\n".join(lines) if len(lines) > 2 else None
+
+        # Default: Show standings and leaders
+        lines.append("**Group Standings:**\n")
+        for group, teams in data["standings"].items():
+            lines.append(f"**Group {group}:**")
+            for team in teams:
+                lines.append(f"- {team['country']}: {team['w']}W-{team['l']}L ({team['pts']} pts)")
+            lines.append("")
+
+        lines.append("**Scoring Leaders:**")
+        lines.append("| Player | Country | GP | G | A | Pts |")
+        lines.append("|--------|---------|----|----|---|-----|")
+        for p in data["scoring_leaders"][:6]:
+            lines.append(f"| {p['name']} | {p['country']} | {p['gp']} | {p['g']} | {p['a']} | **{p['pts']}** |")
+
+        lines.append("\n**Goalie Leaders:**")
+        lines.append("| Goalie | Country | W | GAA | SV% |")
+        lines.append("|--------|---------|---|-----|-----|")
+        for g in data["goalie_leaders"][:5]:
+            lines.append(f"| {g['name']} | {g['country']} | {g['w']} | {g['gaa']:.2f} | {g['sv']:.3f} |")
+
+        # Show upcoming games if available
+        if data.get("upcoming_games"):
+            lines.append("\n**Upcoming Games:**")
+            for game in data["upcoming_games"][:4]:
+                lines.append(f"- {game['away']} @ {game['home']} ({game['round'].title()})")
+
+        return "\n".join(lines)
+
+    async def _fetch_todays_schedule(
+        self,
+        db: AsyncSession,
+        classification: dict,
+    ) -> str | None:
+        """
+        Fetch today's game schedule - both NHL and Olympics if active.
+
+        This is the unified source for "what games are today" queries.
+        """
+        from backend.src.agents.daily_audit import get_todays_games_unified
+
+        try:
+            games = await get_todays_games_unified(db)
+        except Exception as e:
+            logger.warning("schedule_fetch_failed", error=str(e))
+            return None
+
+        if games.total_games == 0:
+            return f"No games scheduled for today ({games.date.strftime('%B %d, %Y')})."
+
+        lines = []
+        lines.append(f"**{games.date.strftime('%A, %B %d, %Y')}**\n")
+
+        # Show Olympics first if active (higher priority during tournament)
+        if games.is_olympics_active and games.olympic_games:
+            lines.append(f"### 🏒 Olympic Hockey - Milano Cortina 2026 ({len(games.olympic_games)} games)\n")
+
+            for game in games.olympic_games:
+                round_str = f" ({game['round'].title()})" if game.get('round') else ""
+                lines.append(f"- **{game['away_team']}** @ **{game['home_team']}**{round_str}")
+                if game.get('home_country') and game.get('away_country'):
+                    lines.append(f"  _{game['away_country']} vs {game['home_country']}_")
+
+            lines.append("")
+
+        # Show NHL games
+        if games.nhl_games:
+            lines.append(f"### 🏒 NHL ({len(games.nhl_games)} games)\n")
+
+            for game in games.nhl_games:
+                time_str = ""
+                if game.get("start_time"):
+                    # Parse and format time, converting from UTC to Eastern
+                    try:
+                        from datetime import datetime, timezone
+                        from zoneinfo import ZoneInfo
+                        start_utc = datetime.fromisoformat(game["start_time"].replace("Z", "+00:00"))
+                        eastern = ZoneInfo("America/New_York")
+                        start_et = start_utc.astimezone(eastern)
+                        time_str = f" - {start_et.strftime('%I:%M %p')} ET"
+                    except Exception:
+                        pass
+
+                state_emoji = ""
+                if game.get("state") == "LIVE":
+                    state_emoji = " 🔴 LIVE"
+                elif game.get("state") == "FINAL":
+                    state_emoji = " ✅ FINAL"
+
+                lines.append(f"- **{game['away_team']}** @ **{game['home_team']}**{time_str}{state_emoji}")
+                if game.get("venue"):
+                    lines.append(f"  _{game['venue']}_")
+
+            lines.append("")
+
+        # Add summary
+        if games.is_olympics_active:
+            lines.append(f"**Total: {games.total_games} games** ({len(games.olympic_games)} Olympic, {len(games.nhl_games)} NHL)")
+            lines.append("\n_Note: During the Olympics, NHL is on break. Olympic games take priority._")
+        else:
+            lines.append(f"**Total: {games.total_games} NHL games tonight**")
+
+        return "\n".join(lines)
+
     def _format_season_display(self, season: str | None) -> str:
         """Convert season format from '20232024' to '2023-24' for display."""
         if not season:
@@ -1148,13 +2003,31 @@ Examples:
             "and?",
             "anything else",
             "what's your take",
+            # Opinion/challenge responses that reference previous answer
+            "seems low",
+            "seems high",
+            "too low",
+            "too high",
+            "that's wrong",
+            "i disagree",
+            "are you sure",
+            "really?",
+            "why not",
+            "what if",
+            "but what about",
+            "i think",
+            "seems off",
+            "doesn't seem right",
+            "that can't be right",
+            "sounds low",
+            "sounds high",
         ]
         # Check if query matches any follow-up pattern
         for pattern in followup_patterns:
             if pattern in query_lower:
                 return True
         # Also check for very short queries that are likely follow-ups
-        if len(query_lower) < 20 and any(word in query_lower for word in ["more", "else", "that", "why", "how"]):
+        if len(query_lower) < 25 and any(word in query_lower for word in ["more", "else", "that", "why", "how", "seems", "think", "sure"]):
             return True
         return False
 

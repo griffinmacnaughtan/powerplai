@@ -1,0 +1,29 @@
+name: Keep Backend Alive
+
+on:
+  schedule:
+    # Every 15 minutes - prevents hosting providers from sleeping the container
+    - cron: '*/15 * * * *'
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping backend health endpoint
+        run: |
+          response=$(curl -s -o /dev/null -w "%{http_code}" ${{ secrets.BACKEND_URL }}/health)
+          echo "Health check response: $response"
+          if [ "$response" != "200" ]; then
+            echo "Backend may be starting up, trying again in 30s..."
+            sleep 30
+            curl -s ${{ secrets.BACKEND_URL }}/health
+          fi
+
+      - name: Trigger data freshness check
+        run: |
+          # Hit an endpoint that requires DB access to ensure scheduler is running
+          curl -s "${{ secrets.BACKEND_URL }}/api/chat" \
+            -H "Content-Type: application/json" \
+            -d '{"message": "health check"}' \
+            --max-time 60 || true

@@ -3,6 +3,7 @@
 import { useState, useCallback, useRef } from 'react'
 import { api, QueryResponse, ChatHistoryMessage } from '@/lib/api'
 import { Message } from '@/components/chat/ChatMessage'
+import { DEMO_MODE, getDemoResponse } from '@/lib/demoData'
 
 export function useChat() {
   const [messages, setMessages] = useState<Message[]>([])
@@ -30,6 +31,24 @@ export function useChat() {
     setMessages((prev) => [...prev, userMessage])
     setIsLoading(true)
     setError(null)
+
+    // Demo mode - return cached responses
+    if (DEMO_MODE) {
+      await new Promise(resolve => setTimeout(resolve, 800)) // Simulate API delay
+
+      const demoResponse: Message = {
+        id: `assistant-${Date.now()}`,
+        role: 'assistant',
+        content: getDemoResponse(content),
+        sources: [{ type: 'demo', data: 'Sample data for demonstration' }],
+        queryType: 'demo',
+        timestamp: new Date(),
+      }
+
+      setMessages((prev) => [...prev, demoResponse])
+      setIsLoading(false)
+      return
+    }
 
     try {
       // Send query with conversation history for context

@@ -13,7 +13,20 @@
       "Bash(docker ps:*)",
       "Bash(docker-compose stop:*)",
       "Bash(docker-compose rm:*)",
-      "Bash(docker-compose exec:*)"
+      "Bash(docker-compose exec:*)",
+      "Bash(npm run dev)",
+      "Bash(docker compose:*)",
+      "Bash(dir:*)",
+      "Bash(pip install:*)",
+      "Bash(timeout:*)",
+      "WebSearch",
+      "WebFetch(domain:www.iihf.com)",
+      "WebFetch(domain:www.espn.com)",
+      "Bash(docker restart:*)",
+      "Bash(docker-compose down:*)",
+      "Bash(npx tsc:*)",
+      "Bash(git -C /c/code/powerplai ls-files --others --exclude-standard)",
+      "Bash(git -C /c/code/powerplai diff --name-only HEAD)"
     ]
   }
 }

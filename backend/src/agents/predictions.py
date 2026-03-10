@@ -1,13 +1,35 @@
 """
-PowerplAI Prediction Engine
+PowerplAI Prediction Engine - Multi-Factor Weighted Probability Model
 
-Calculates player scoring probabilities for upcoming games based on:
-- Recent form (last N games performance)
-- Head-to-head history (career performance vs opponent)
-- Home/away splits
-- Season baseline performance
+This is NOT an ensemble model (which would combine multiple ML models).
+Instead, it's a weighted probability estimator that combines multiple
+statistical factors using domain-knowledge-informed weights.
 
-Outputs probability estimates with confidence levels and explanations.
+Model Architecture:
+- Computes expected performance from 6 data sources
+- Applies fixed weights (tunable via config) to combine factors
+- Converts expected values to probabilities using Poisson distribution
+- Applies adjustments for goalie matchup and game pace
+
+Factors and Weights:
+1. Recent form (30%) - Last 5 games performance, most predictive
+2. Season baseline (25%) - Full season average for stability
+3. H2H history (15%) - Historical performance vs specific opponent
+4. Home/away splits (10%) - Location-based adjustments
+5. Goalie matchup (10%) - Opponent goalie quality vs league average
+6. Team pace (10%) - Combined scoring environment of both teams
+
+Probability Conversion:
+- Uses Poisson distribution: P(≥1 goal) = 1 - e^(-λ) where λ = expected goals
+- This is appropriate for rare events (goals) with known average rate
+
+Confidence Scoring:
+- Based on sample sizes across all factors
+- High: 50+ total games analyzed
+- Medium: 20-50 games
+- Low: <20 games
+
+For evaluation metrics and calibration, see model_evaluation.py
 """
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -106,6 +128,66 @@ class MatchupPrediction:
 
 class PredictionEngine:
     """Engine for calculating player and game predictions."""
+
+    def __init__(self, db: AsyncSession = None):
+        """
+        Initialize prediction engine.
+
+        Args:
+            db: Optional database session. If provided, will be used for all queries.
+                Otherwise, db must be passed to each method.
+        """
+        self._db = db
+
+    async def predict_tonight(self) -> list["MatchupPrediction"]:
+        """
+        Get predictions for all games scheduled tonight.
+
+        Returns list of MatchupPrediction for each game.
+        """
+        if not self._db:
+            raise ValueError("Database session required. Initialize with PredictionEngine(db)")
+
+        # Get today's games
+        from datetime import date
+        today = date.today()
+
+        result = await self._db.execute(
+            text("""
+                SELECT home_team_abbrev, away_team_abbrev, start_time_utc
+                FROM games
+                WHERE game_date = :today
+                  AND game_state = 'FUT'
+                ORDER BY start_time_utc
+            """),
+            {"today": today}
+        )
+
+        games = result.fetchall()
+
+        if not games:
+            return []
+
+        matchups = []
+        for game in games:
+            try:
+                prediction = await self.get_matchup_prediction(
+                    self._db,
+                    game.home_team_abbrev,
+                    game.away_team_abbrev,
+                    today,
+                )
+                matchups.append(prediction)
+            except Exception as e:
+                logger.warning(
+                    "matchup_prediction_failed",
+                    home=game.home_team_abbrev,
+                    away=game.away_team_abbrev,
+                    error=str(e)
+                )
+                continue
+
+        return matchups
 
     async def get_matchup_prediction(
         self,

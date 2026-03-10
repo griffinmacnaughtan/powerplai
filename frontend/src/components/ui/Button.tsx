@@ -1,6 +1,6 @@
 'use client'
 
-import { forwardRef } from 'react'
+import React, { forwardRef } from 'react'
 import { motion, HTMLMotionProps } from 'framer-motion'
 import clsx from 'clsx'
 
@@ -58,7 +58,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
             />
           </svg>
         )}
-        {children}
+        {children as React.ReactNode}
       </motion.button>
     )
   }
