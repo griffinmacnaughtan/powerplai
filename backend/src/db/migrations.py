@@ -101,6 +101,7 @@ async def add_unique_constraints():
     constraints = [
         ("goalie_stats", "goalie_stats_player_season_key", "player_id, season"),
         ("team_season_stats", "team_season_stats_team_season_key", "team_abbrev, season"),
+        ("player_season_stats", "player_season_stats_player_season_key", "player_id, season"),
     ]
 
     async with engine.begin() as conn:

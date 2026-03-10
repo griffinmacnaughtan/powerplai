@@ -345,8 +345,7 @@ async def update_moneypuck_stats(db: AsyncSession, season_year: str) -> dict:
                             xg = EXCLUDED.xg,
                             xg_per_60 = EXCLUDED.xg_per_60,
                             corsi_for_pct = EXCLUDED.corsi_for_pct,
-                            fenwick_for_pct = EXCLUDED.fenwick_for_pct,
-                            updated_at = NOW()
+                            fenwick_for_pct = EXCLUDED.fenwick_for_pct
                     """),
                     {
                         "player_id": player_row[0],
@@ -516,6 +515,7 @@ async def run_startup_updates() -> dict:
         except Exception as e:
             logger.error("moneypuck_load_failed", error=str(e))
             results["errors"].append(f"moneypuck: {str(e)}")
+            await db.rollback()
 
         # 1. Refresh today's schedule
         try:
@@ -523,6 +523,7 @@ async def run_startup_updates() -> dict:
         except Exception as e:
             logger.error("schedule_refresh_failed", error=str(e))
             results["errors"].append(f"schedule: {str(e)}")
+            await db.rollback()
 
         # 2. Catch up on game logs
         try:
@@ -530,6 +531,7 @@ async def run_startup_updates() -> dict:
         except Exception as e:
             logger.error("game_log_catchup_failed", error=str(e))
             results["errors"].append(f"game_logs: {str(e)}")
+            await db.rollback()
 
         # 3. Update injuries
         try:
@@ -537,6 +539,7 @@ async def run_startup_updates() -> dict:
         except Exception as e:
             logger.error("injury_update_failed", error=str(e))
             results["errors"].append(f"injuries: {str(e)}")
+            await db.rollback()
 
         # 4. Update team/goalie stats
         try:
@@ -544,6 +547,7 @@ async def run_startup_updates() -> dict:
         except Exception as e:
             logger.error("team_stats_update_failed", error=str(e))
             results["errors"].append(f"team_stats: {str(e)}")
+            await db.rollback()
 
         # 5. Sync team rosters (updates player team assignments for trades)
         try:
@@ -551,6 +555,7 @@ async def run_startup_updates() -> dict:
         except Exception as e:
             logger.error("roster_sync_failed", error=str(e))
             results["errors"].append(f"rosters: {str(e)}")
+            await db.rollback()
 
         # 6. Refresh MoneyPuck advanced stats for current season (if not recently done)
         try:
@@ -558,6 +563,7 @@ async def run_startup_updates() -> dict:
         except Exception as e:
             logger.error("moneypuck_refresh_failed", error=str(e))
             results["errors"].append(f"moneypuck_refresh: {str(e)}")
+            await db.rollback()
 
         # 7. Update Olympic hockey data (if tournament is active)
         try:
