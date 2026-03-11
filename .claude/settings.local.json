@@ -26,7 +26,8 @@
       "Bash(docker-compose down:*)",
       "Bash(npx tsc:*)",
       "Bash(git -C /c/code/powerplai ls-files --others --exclude-standard)",
-      "Bash(git -C /c/code/powerplai diff --name-only HEAD)"
+      "Bash(git -C /c/code/powerplai diff --name-only HEAD)",
+      "WebFetch(domain:the-odds-api.com)"
     ]
   }
 }
