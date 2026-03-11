@@ -114,8 +114,9 @@ export default function Home() {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0, y: -20 }}
-              className="flex-1 flex flex-col items-center justify-center py-12"
+              className="flex-1 min-h-0 overflow-y-auto flex flex-col py-12"
             >
+              <div className="my-auto w-full flex flex-col items-center">
               <motion.h1
                 initial={{ y: 20, opacity: 0 }}
                 animate={{ y: 0, opacity: 1 }}
@@ -187,6 +188,7 @@ export default function Home() {
                   Powered by MoneyPuck, NHL API, and Claude AI
                 </p>
               </motion.div>
+              </div>
             </motion.div>
           ) : (
             // Chat interface
