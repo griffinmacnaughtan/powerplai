@@ -437,6 +437,34 @@ async def trigger_update(background_tasks: BackgroundTasks):
     return {"status": "started", "message": "Update started in background"}
 
 
+@app.post("/api/data/ingest-history")
+@limiter.limit("1/hour")
+async def ingest_history(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    start_year: int = 2020,
+    end_year: int | None = None,
+):
+    """
+    Ingest historical season stats from MoneyPuck (2007-present).
+    Skips seasons already in the database.
+    Rate limited to 1/hour.
+    """
+    from backend.src.ingestion.startup_updates import ingest_historical_seasons
+
+    async def run_ingestion():
+        async with async_session_maker() as db:
+            result = await ingest_historical_seasons(db, start_year=start_year, end_year=end_year)
+            logger.info("historical_ingestion_complete", result=result)
+
+    background_tasks.add_task(run_ingestion)
+    end_display = end_year or "latest completed season"
+    return {
+        "status": "started",
+        "message": f"Historical ingestion started for {start_year} to {end_display}",
+    }
+
+
 @app.get("/api/seasons")
 async def get_available_seasons(db: AsyncSession = Depends(get_db)):
     """Get list of seasons with data available."""

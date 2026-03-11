@@ -297,6 +297,20 @@ class PowerplAICopilot:
                 context_parts.append(f"## Team Statistics\n{team_context}")
                 sources.append({"type": "sql", "data": "team_stats"})
 
+        # Check if this is a multi-season / career leaders query
+        elif classification.get("is_multi_season_query") and (
+            classification.get("is_leaders_query") or classification.get("type") == "leaders"
+        ):
+            stats_requested = classification.get("stats", ["points"])
+            seasons_count = classification.get("seasons_count")
+            leaders_limit = max(classification.get("top_n") or 10, 10)
+            multi_context = await self._fetch_multi_season_leaders(
+                db, stats_requested, limit=leaders_limit, seasons_count=seasons_count
+            )
+            if multi_context:
+                context_parts.append(f"## Multi-Season Leaders\n{multi_context}")
+                sources.append({"type": "sql", "data": "multi_season_leaders"})
+
         # Check if this is a leaders query (e.g., "who leads in xG?")
         elif classification.get("is_leaders_query") or classification.get("type") == "leaders":
             stats_requested = classification.get("stats", ["points"])
@@ -379,6 +393,8 @@ Respond with JSON only:
     "stats": ["specific stats mentioned like goals, xG, corsi"],
     "timeframe": "current season" | "career" | "tonight" | "tomorrow" | "monday" | "tuesday" | "wednesday" | "thursday" | "friday" | "saturday" | "sunday" | "this week" | "feb 3" | "january 15" | null,
     "is_leaders_query": true if asking about league leaders/top players/who leads in a stat,
+    "is_multi_season_query": true if asking about career stats, past/last multiple years, or historical performance spanning more than 1 season,
+    "seasons_count": number if asking about last N seasons or years (e.g. "last 5 years" = 5, "past 3 seasons" = 3, null otherwise),
     "is_all_teams_query": true if asking about all teams or each team (e.g. "top 3 on each team", "best player per team"),
     "is_prediction_query": true if asking about who will score, predictions, who to start, fantasy advice for tonight/tomorrow/upcoming games,
     "is_tonight_query": true if asking about tonight's games, today's games, tomorrow's games, or upcoming games without specific teams,
@@ -446,7 +462,11 @@ Examples:
 - "How are the model parlays doing?" -> type: "parlay_track", is_parlay_query: true
 - "Parlay record" -> type: "parlay_track", is_parlay_query: true
 - "How accurate are the model picks?" -> type: "parlay_track", is_parlay_query: true
-- "Show me the parlay tracker" -> type: "parlay_track", is_parlay_query: true"""
+- "Show me the parlay tracker" -> type: "parlay_track", is_parlay_query: true
+- "Who are the best ten players over the past five years?" -> type: "leaders", is_leaders_query: true, is_multi_season_query: true, seasons_count: 5, stats: ["points"]
+- "Most goals in the last 3 seasons?" -> type: "leaders", is_leaders_query: true, is_multi_season_query: true, seasons_count: 3, stats: ["goals"]
+- "Career stats for McDavid" -> type: "stats_lookup", players: ["McDavid"], is_multi_season_query: true
+- "Top scorers over the past 3 years?" -> type: "leaders", is_leaders_query: true, is_multi_season_query: true, seasons_count: 3, stats: ["points"]"""
                 }
             ],
         )
@@ -771,6 +791,94 @@ Examples:
                 stat_value = getattr(row, sort_column)
                 team_lines.append(f"  {row.rank}. {row.name}: {stat_value} {stat_label.lower()}")
             stats_text.append("\n".join(team_lines))
+
+        return "\n".join(stats_text)
+
+    async def _fetch_multi_season_leaders(
+        self,
+        db: AsyncSession,
+        stats: list[str],
+        limit: int = 10,
+        seasons_count: int | None = None,
+    ) -> str | None:
+        """Fetch aggregated leaders across multiple seasons."""
+        stat_mapping = {
+            "goals": "goals", "g": "goals",
+            "assists": "assists", "a": "assists",
+            "points": "points", "p": "points",
+            "xg": "xg", "expected goals": "xg",
+        }
+
+        sort_column = "points"
+        stat_label = "Points"
+        for stat in stats:
+            if not stat:
+                continue
+            if stat.lower() in stat_mapping:
+                sort_column = stat_mapping[stat.lower()]
+                stat_label = stat.title()
+                break
+
+        # Get available seasons ordered newest first
+        seasons_result = await db.execute(
+            text("SELECT DISTINCT season FROM player_season_stats ORDER BY season DESC")
+        )
+        available = [row[0] for row in seasons_result.fetchall()]
+        if not available:
+            return None
+
+        if seasons_count:
+            selected = available[:seasons_count]
+        else:
+            selected = available
+
+        if not selected:
+            return None
+
+        placeholders = ", ".join([f":s{i}" for i in range(len(selected))])
+        params = {f"s{i}": s for i, s in enumerate(selected)}
+        params["limit"] = limit
+
+        result = await db.execute(
+            text(f"""
+                SELECT
+                    p.name,
+                    p.position,
+                    p.team_abbrev,
+                    COUNT(DISTINCT s.season) AS seasons,
+                    SUM(s.games_played) AS total_gp,
+                    SUM(s.goals) AS total_goals,
+                    SUM(s.assists) AS total_assists,
+                    SUM(s.points) AS total_points,
+                    ROUND(SUM(s.xg)::numeric, 1) AS total_xg
+                FROM players p
+                JOIN player_season_stats s ON p.id = s.player_id
+                WHERE s.season IN ({placeholders})
+                  AND s.{sort_column} IS NOT NULL
+                GROUP BY p.id, p.name, p.position, p.team_abbrev
+                HAVING SUM(s.games_played) >= 20
+                ORDER BY SUM(s.{sort_column}) DESC
+                LIMIT :limit
+            """),
+            params,
+        )
+
+        rows = result.fetchall()
+        if not rows:
+            return None
+
+        # Format season range label
+        year_range = f"{selected[-1][:4]}-{selected[0][4:]}" if len(selected) > 1 else selected[0][:4]
+        seasons_label = f"last {len(selected)} seasons" if seasons_count else f"all available seasons ({year_range})"
+
+        stats_text = [f"**Top {limit} players by {stat_label} — {seasons_label} (aggregated):**\n"]
+        for i, row in enumerate(rows, 1):
+            stats_text.append(
+                f"{i}. **{row.name}** ({row.position or 'F'}, {row.team_abbrev or 'N/A'}):\n"
+                f"   {int(row.seasons)} seasons, GP: {int(row.total_gp)}, "
+                f"G: {int(row.total_goals)}, A: {int(row.total_assists)}, P: {int(row.total_points)}"
+                + (f", xG: {row.total_xg}" if row.total_xg else "")
+            )
 
         return "\n".join(stats_text)
 

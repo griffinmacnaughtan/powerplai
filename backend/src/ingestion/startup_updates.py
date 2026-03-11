@@ -269,6 +269,92 @@ async def update_team_goalie_stats(db: AsyncSession, season: str) -> dict:
     return stats
 
 
+async def _ingest_moneypuck_season(db: AsyncSession, season_year: str) -> dict:
+    """
+    Download and store MoneyPuck stats for a given season year.
+    No rate-limit check — caller is responsible for throttling.
+    """
+    from backend.src.ingestion.moneypuck import download_season_stats, transform_moneypuck_to_schema
+    from pathlib import Path
+
+    data_path = Path(f"data/raw/moneypuck_{season_year}.csv")
+    df = await download_season_stats(season_year, save_path=data_path)
+    records = transform_moneypuck_to_schema(df)
+
+    season = f"{season_year}{int(season_year) + 1}"
+    updated_count = 0
+
+    for record in records:
+        await db.execute(
+            text("""
+                INSERT INTO players (nhl_id, name, team_abbrev, created_at, updated_at)
+                VALUES (:nhl_id, :name, :team_abbrev, NOW(), NOW())
+                ON CONFLICT (nhl_id) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    updated_at = NOW()
+            """),
+            {
+                "nhl_id": record["nhl_player_id"],
+                "name": record["player_name"],
+                "team_abbrev": record["team_abbrev"],
+            },
+        )
+
+        result = await db.execute(
+            text("SELECT id FROM players WHERE nhl_id = :nhl_id"),
+            {"nhl_id": record["nhl_player_id"]},
+        )
+        player_row = result.fetchone()
+
+        if player_row:
+            await db.execute(
+                text("""
+                    INSERT INTO player_season_stats (
+                        player_id, season, team_abbrev, games_played,
+                        goals, assists, points, shots, toi_per_game,
+                        xg, xg_per_60, corsi_for_pct, fenwick_for_pct,
+                        created_at
+                    ) VALUES (
+                        :player_id, :season, :team_abbrev, :games_played,
+                        :goals, :assists, :points, :shots, :toi_per_game,
+                        :xg, :xg_per_60, :corsi_for_pct, :fenwick_for_pct,
+                        NOW()
+                    )
+                    ON CONFLICT (player_id, season) DO UPDATE SET
+                        team_abbrev = EXCLUDED.team_abbrev,
+                        games_played = EXCLUDED.games_played,
+                        goals = EXCLUDED.goals,
+                        assists = EXCLUDED.assists,
+                        points = EXCLUDED.points,
+                        shots = EXCLUDED.shots,
+                        toi_per_game = EXCLUDED.toi_per_game,
+                        xg = EXCLUDED.xg,
+                        xg_per_60 = EXCLUDED.xg_per_60,
+                        corsi_for_pct = EXCLUDED.corsi_for_pct,
+                        fenwick_for_pct = EXCLUDED.fenwick_for_pct
+                """),
+                {
+                    "player_id": player_row[0],
+                    "season": season,
+                    "team_abbrev": record["team_abbrev"],
+                    "games_played": record["games_played"],
+                    "goals": record["goals"],
+                    "assists": record["assists"],
+                    "points": record["points"],
+                    "shots": record["shots"],
+                    "toi_per_game": record["toi_per_game"],
+                    "xg": record["xg"],
+                    "xg_per_60": record["xg_per_60"],
+                    "corsi_for_pct": record["corsi_for_pct"],
+                    "fenwick_for_pct": record["fenwick_for_pct"],
+                },
+            )
+            updated_count += 1
+
+    await db.commit()
+    return {"updated": updated_count, "season": season}
+
+
 async def update_moneypuck_stats(db: AsyncSession, season_year: str) -> dict:
     """
     Refresh MoneyPuck advanced stats for the current season.
@@ -276,9 +362,6 @@ async def update_moneypuck_stats(db: AsyncSession, season_year: str) -> dict:
     MoneyPuck updates their data regularly during the season,
     so we need to re-download to get latest xG, Corsi, etc.
     """
-    from backend.src.ingestion.moneypuck import download_season_stats, transform_moneypuck_to_schema
-    from pathlib import Path
-
     # Check if we've updated recently (within last 12 hours)
     last_update = get_last_moneypuck_update()
     if last_update:
@@ -290,92 +373,51 @@ async def update_moneypuck_stats(db: AsyncSession, season_year: str) -> dict:
     logger.info("updating_moneypuck_stats", season=season_year)
 
     try:
-        # Download latest MoneyPuck data
-        data_path = Path(f"data/raw/moneypuck_{season_year}.csv")
-        df = await download_season_stats(season_year, save_path=data_path)
-        records = transform_moneypuck_to_schema(df)
-
-        season = f"{season_year}{int(season_year) + 1}"
-        updated_count = 0
-
-        for record in records:
-            # Ensure player exists
-            await db.execute(
-                text("""
-                    INSERT INTO players (nhl_id, name, team_abbrev, created_at, updated_at)
-                    VALUES (:nhl_id, :name, :team_abbrev, NOW(), NOW())
-                    ON CONFLICT (nhl_id) DO UPDATE SET
-                        name = EXCLUDED.name,
-                        updated_at = NOW()
-                """),
-                {
-                    "nhl_id": record["nhl_player_id"],
-                    "name": record["player_name"],
-                    "team_abbrev": record["team_abbrev"]
-                },
-            )
-
-            # Get player id
-            result = await db.execute(
-                text("SELECT id FROM players WHERE nhl_id = :nhl_id"),
-                {"nhl_id": record["nhl_player_id"]},
-            )
-            player_row = result.fetchone()
-
-            if player_row:
-                await db.execute(
-                    text("""
-                        INSERT INTO player_season_stats (
-                            player_id, season, team_abbrev, games_played,
-                            goals, assists, points, shots, toi_per_game,
-                            xg, xg_per_60, corsi_for_pct, fenwick_for_pct,
-                            created_at
-                        ) VALUES (
-                            :player_id, :season, :team_abbrev, :games_played,
-                            :goals, :assists, :points, :shots, :toi_per_game,
-                            :xg, :xg_per_60, :corsi_for_pct, :fenwick_for_pct,
-                            NOW()
-                        )
-                        ON CONFLICT (player_id, season) DO UPDATE SET
-                            team_abbrev = EXCLUDED.team_abbrev,
-                            games_played = EXCLUDED.games_played,
-                            goals = EXCLUDED.goals,
-                            assists = EXCLUDED.assists,
-                            points = EXCLUDED.points,
-                            shots = EXCLUDED.shots,
-                            toi_per_game = EXCLUDED.toi_per_game,
-                            xg = EXCLUDED.xg,
-                            xg_per_60 = EXCLUDED.xg_per_60,
-                            corsi_for_pct = EXCLUDED.corsi_for_pct,
-                            fenwick_for_pct = EXCLUDED.fenwick_for_pct
-                    """),
-                    {
-                        "player_id": player_row[0],
-                        "season": season,
-                        "team_abbrev": record["team_abbrev"],
-                        "games_played": record["games_played"],
-                        "goals": record["goals"],
-                        "assists": record["assists"],
-                        "points": record["points"],
-                        "shots": record["shots"],
-                        "toi_per_game": record["toi_per_game"],
-                        "xg": record["xg"],
-                        "xg_per_60": record["xg_per_60"],
-                        "corsi_for_pct": record["corsi_for_pct"],
-                        "fenwick_for_pct": record["fenwick_for_pct"],
-                    },
-                )
-                updated_count += 1
-
-        await db.commit()
+        result = await _ingest_moneypuck_season(db, season_year)
         set_last_moneypuck_update()
-
-        logger.info("moneypuck_stats_updated", count=updated_count)
-        return {"updated": updated_count, "season": season}
-
+        logger.info("moneypuck_stats_updated", count=result["updated"])
+        return result
     except Exception as e:
         logger.error("moneypuck_update_failed", error=str(e))
         return {"error": str(e)}
+
+
+async def ingest_historical_seasons(
+    db: AsyncSession,
+    start_year: int = 2020,
+    end_year: int | None = None,
+) -> dict:
+    """
+    Ingest MoneyPuck season stats for historical seasons.
+
+    Skips any season that already has >100 player records.
+    Default range: 2020 through last completed season.
+    """
+    if end_year is None:
+        end_year = int(get_current_season()) - 1  # exclude current in-progress season
+
+    results = {}
+    for year in range(start_year, end_year + 1):
+        season_full = f"{year}{year + 1}"
+        try:
+            count_result = await db.execute(
+                text("SELECT COUNT(*) FROM player_season_stats WHERE season = :season"),
+                {"season": season_full},
+            )
+            count = count_result.scalar() or 0
+            if count > 100:
+                results[str(year)] = {"skipped": True, "existing": count}
+                logger.info("historical_season_exists", season=season_full, count=count)
+                continue
+
+            logger.info("ingesting_historical_season", season=season_full)
+            result = await _ingest_moneypuck_season(db, str(year))
+            results[str(year)] = result
+        except Exception as e:
+            logger.error("historical_season_failed", season=season_full, error=str(e))
+            results[str(year)] = {"error": str(e)}
+
+    return results
 
 
 async def update_rosters(db: AsyncSession, season: str) -> dict:
