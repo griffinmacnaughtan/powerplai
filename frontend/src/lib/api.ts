@@ -5,6 +5,12 @@ export interface ChatHistoryMessage {
   content: string
 }
 
+export interface ImageAttachment {
+  data: string       // base64-encoded image data (no data-URI prefix)
+  media_type: string // e.g. "image/png", "image/jpeg"
+  name: string       // original filename
+}
+
 export interface QueryResponse {
   response: string
   sources: Array<{ type: string; data: string }>
@@ -123,7 +129,8 @@ class PowerplAIAPI {
   async query(
     query: string,
     includeRag: boolean = true,
-    messages: ChatHistoryMessage[] = []
+    messages: ChatHistoryMessage[] = [],
+    images: ImageAttachment[] = []
   ): Promise<QueryResponse> {
     const controller = new AbortController()
     const timeoutId = setTimeout(() => controller.abort(), 120000) // 2 minute timeout
@@ -138,6 +145,7 @@ class PowerplAIAPI {
           query,
           include_rag: includeRag,
           messages,
+          images,
         }),
         signal: controller.signal,
       })

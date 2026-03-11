@@ -1,8 +1,8 @@
 'use client'
 
 import { useState, useCallback, useRef } from 'react'
-import { api, QueryResponse, ChatHistoryMessage } from '@/lib/api'
-import { Message } from '@/components/chat/ChatMessage'
+import { api, QueryResponse, ChatHistoryMessage, ImageAttachment } from '@/lib/api'
+import { Message, AttachedFile } from '@/components/chat/ChatMessage'
 import { DEMO_MODE, getDemoResponse } from '@/lib/demoData'
 
 export function useChat() {
@@ -13,19 +13,20 @@ export function useChat() {
   const messagesRef = useRef<Message[]>([])
   messagesRef.current = messages
 
-  const sendMessage = useCallback(async (content: string) => {
+  const sendMessage = useCallback(async (content: string, files?: AttachedFile[]) => {
     // Build conversation history from existing messages (before adding new user message)
     const history: ChatHistoryMessage[] = messagesRef.current.map((msg) => ({
       role: msg.role,
       content: msg.content,
     }))
 
-    // Add user message
+    // Add user message (with any attachments for display)
     const userMessage: Message = {
       id: `user-${Date.now()}`,
       role: 'user',
       content,
       timestamp: new Date(),
+      attachments: files,
     }
 
     setMessages((prev) => [...prev, userMessage])
@@ -51,8 +52,17 @@ export function useChat() {
     }
 
     try {
-      // Send query with conversation history for context
-      const response: QueryResponse = await api.query(content, true, history)
+      // Convert image attachments to the API format (strip data-URI prefix)
+      const imageAttachments: ImageAttachment[] = (files ?? [])
+        .filter(f => f.type.startsWith('image/'))
+        .map(f => ({
+          data: f.dataUrl.replace(/^data:[^;]+;base64,/, ''),
+          media_type: f.type,
+          name: f.name,
+        }))
+
+      // Send query with conversation history and optional images for context
+      const response: QueryResponse = await api.query(content, true, history, imageAttachments)
 
       // Add assistant message
       const assistantMessage: Message = {

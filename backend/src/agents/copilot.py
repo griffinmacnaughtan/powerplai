@@ -75,6 +75,7 @@ class PowerplAICopilot:
         db: AsyncSession,
         include_rag: bool = True,
         conversation_history: list[dict] | None = None,
+        images: list[dict] | None = None,
     ) -> dict:
         """
         Process a user query and return a response with sources.
@@ -157,7 +158,7 @@ class PowerplAICopilot:
 
                 # Generate response with this context
                 context = "\n\n".join(context_parts)
-                response = await self._generate_response(user_query, context, conversation_history)
+                response = await self._generate_response(user_query, context, conversation_history, images)
                 return {
                     "response": response,
                     "sources": sources,
@@ -304,7 +305,7 @@ class PowerplAICopilot:
         # Step 3: Generate response with Claude
         context = "\n\n".join(context_parts) if context_parts else "No specific data found in database."
 
-        response = await self._generate_response(user_query, context, conversation_history)
+        response = await self._generate_response(user_query, context, conversation_history, images)
 
         return {
             "response": response,
@@ -946,7 +947,7 @@ Examples:
                 for game in games[:10]:  # Process up to 10 games
                     try:
                         matchup = await prediction_engine.get_matchup_prediction(
-                            db, game["home_team"], game["away_team"], target_date, top_n=5
+                            db, game["home_team"], game["away_team"], target_date, top_n=10
                         )
                         all_top_scorers.extend(matchup.top_scorers)
 
@@ -955,7 +956,7 @@ Examples:
                             predictions_text.append(f"*{game['venue']}*")
 
                         predictions_text.append("\n**Top Goal Scorers:**")
-                        for i, pred in enumerate(matchup.top_scorers[:3], 1):
+                        for i, pred in enumerate(matchup.top_scorers[:5], 1):
                             prob_pct = int(pred.prob_goal * 100)
                             predictions_text.append(
                                 f"{i}. **{pred.player_name}** ({pred.team}) - {prob_pct}% chance to score"
@@ -966,11 +967,11 @@ Examples:
                         logger.warning("game_prediction_failed", game=game, error=str(e))
                         continue
 
-                # Add overall top scorers
+                # Add overall top scorers across all tonight's games (top 15 for full follow-up coverage)
                 all_top_scorers.sort(key=lambda p: p.prob_goal, reverse=True)
                 if all_top_scorers:
                     predictions_text.append("\n### Overall Best Bets Tonight")
-                    for i, pred in enumerate(all_top_scorers[:5], 1):
+                    for i, pred in enumerate(all_top_scorers[:15], 1):
                         prob_pct = int(pred.prob_goal * 100)
                         matchup_str = f"vs {pred.opponent}" if pred.is_home else f"@ {pred.opponent}"
                         predictions_text.append(
@@ -1009,7 +1010,7 @@ Examples:
                 lines.append(f"- {prediction.away_team}: {ag.get('name', 'Unknown')} ({ag.get('save_pct', 0):.3f} SV%, {ag.get('gaa', 0):.2f} GAA)")
 
         lines.append("\n**Most Likely Scorers:**")
-        for i, pred in enumerate(prediction.top_scorers[:5], 1):
+        for i, pred in enumerate(prediction.top_scorers[:10], 1):
             prob_pct = int(pred.prob_goal * 100)
             point_pct = int(pred.prob_point * 100)
             lines.append(
@@ -2092,8 +2093,9 @@ Examples:
         query: str,
         context: str,
         conversation_history: list[dict] | None = None,
+        images: list[dict] | None = None,
     ) -> str:
-        """Generate the final response using Claude."""
+        """Generate the final response using Claude (with optional vision)."""
         # Build message list with conversation history for context
         messages = []
 
@@ -2105,10 +2107,8 @@ Examples:
                     "content": msg["content"],
                 })
 
-        # Add current query with context
-        messages.append({
-            "role": "user",
-            "content": f"""Context from database and knowledge base:
+        # Build the user message text
+        user_text = f"""Context from database and knowledge base:
 
 {context}
 
@@ -2121,13 +2121,34 @@ Provide a helpful, accurate response based on the context above.
 IMPORTANT:
 - Base your answer ONLY on the context provided above. Do not say you don't have access to data if it's in the context.
 - If the context contains scoring predictions, present them clearly with percentages and player names.
+- The "Overall Best Bets Tonight" list contains up to 15 ranked players. If a follow-up asks for more picks, draw from players further down that list (e.g., ranks 4-6 for "give me three more").
 - If this is a follow-up question referencing previous conversation (e.g., "tell me more", "what about that"), use the conversation history above for context.
+- If the user attached an image, analyze it in the context of the hockey question asked.
 - Always end your response with a "Sources:" section listing where the data came from, formatted as:
 
 Sources:
 - PowerplAI Scoring Model (NHL API game logs, recent form analysis)
 - [Any other sources from the context]"""
-        })
+
+        # Build the user message content — include images if provided (Claude vision)
+        if images:
+            content: list = []
+            for img in images:
+                media_type = img.get("media_type", "image/png")
+                # Only pass supported image types to Claude vision
+                if media_type in ("image/jpeg", "image/png", "image/gif", "image/webp"):
+                    content.append({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": img["data"],
+                        },
+                    })
+            content.append({"type": "text", "text": user_text})
+            messages.append({"role": "user", "content": content})
+        else:
+            messages.append({"role": "user", "content": user_text})
 
         message = self.client.messages.create(
             model="claude-sonnet-4-20250514",
