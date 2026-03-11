@@ -268,7 +268,10 @@ class PowerplAICopilot:
                 if year_match:
                     year = year_match.group(1)
                     season = f"{year}{int(year)+1}"
-            leaders_context = await self._fetch_league_leaders(db, stats_requested, season=season)
+            # Use top_n from classification (handles "23rd best" etc.), minimum 25 so common
+            # ordinal queries are covered even when the classifier returns a smaller number.
+            leaders_limit = max(classification.get("top_n") or 25, 25)
+            leaders_context = await self._fetch_league_leaders(db, stats_requested, limit=leaders_limit, season=season)
             if leaders_context:
                 context_parts.append(f"## League Leaders\n{leaders_context}")
                 sources.append({"type": "sql", "data": "league_leaders"})
@@ -343,7 +346,7 @@ Respond with JSON only:
     "is_regression_query": true if asking about regression, xG regression, due for goals, underperforming, overperforming, or shooting luck,
     "is_olympics_query": true if asking about Olympics, Olympic hockey, Team Canada/USA/Sweden, Milano Cortina 2026, or Olympic standings/stats,
     "is_schedule_query": true if asking about games today, tonight, what's playing, schedule, matchups,
-    "top_n": number if asking for top N players (e.g. "top 3" = 3, "top 5" = 5),
+    "top_n": number if asking for top N players OR a specific rank (e.g. "top 3" = 3, "top 5" = 5, "23rd best" = 23, "10th" = 10, "who is ranked 15" = 15),
     "offered_odds": number if asking about a specific bet with odds (e.g. "+210" = 210, "-150" = -150)
 }}
 
@@ -721,7 +724,7 @@ Examples:
         self,
         db: AsyncSession,
         stats: list[str],
-        limit: int = 10,
+        limit: int = 25,
         season: str | None = None,
     ) -> str | None:
         """Fetch league leaders for the requested stats."""
