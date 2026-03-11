@@ -121,9 +121,9 @@ export function ChatMessage({ message, isLatest }: ChatMessageProps) {
               {message.sources.map((source, i) => (
                 <span
                   key={i}
-                  className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full bg-primary-50 text-primary font-medium"
+                  className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full bg-primary-50 dark:bg-primary/20 text-primary dark:text-ice font-medium"
                 >
-                  <span className="w-1.5 h-1.5 rounded-full bg-primary" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-primary dark:bg-ice" />
                   {source.data === 'league_leaders' ? 'Stats Database' :
                    source.data === 'team_stats' ? 'Team Stats' :
                    source.data === 'all_teams_breakdown' ? 'All Teams' :
