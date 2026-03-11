@@ -58,8 +58,8 @@ export function Logo({ size = 'md', animate = true, link = true }: LogoProps) {
 export function LogoText({ className = '' }: { className?: string }) {
   return (
     <span className={`font-bold tracking-tight ${className}`}>
-      <span className="text-primary">Powerpl</span>
-      <span className="text-ice-dark">AI</span>
+      <span className="text-primary dark:text-ice">Powerpl</span>
+      <span className="text-ice-dark dark:text-ice-light">AI</span>
     </span>
   )
 }

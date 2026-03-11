@@ -18,16 +18,16 @@
 
 /* ── Dark theme ── */
 .dark {
-  --color-background: #0b1120;
-  --color-surface: #141e30;
-  --color-surface-elevated: #1b2640;
-  --color-surface-hover: #223050;
-  --color-border: #2e3f5c;
-  --color-border-dark: #3e5278;
+  --color-background: #07101c;
+  --color-surface: #0d1929;
+  --color-surface-elevated: #152033;
+  --color-surface-hover: #1c2d44;
+  --color-border: #1e3254;
+  --color-border-dark: #2a4470;
 
-  --color-text-primary: #e8eef8;
-  --color-text-secondary: #94aac4;
-  --color-text-muted: #5a7090;
+  --color-text-primary: #dde8f5;
+  --color-text-secondary: #8aabbf;
+  --color-text-muted: #4d6a80;
 }
 
 /* ── Scrollbar ── */
@@ -117,10 +117,11 @@ html {
 }
 
 .dark .glass {
-  background: rgba(11, 17, 32, 0.93);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border-color: rgba(46, 63, 92, 0.95);
+  background: rgba(7, 16, 28, 0.96);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border-color: rgba(30, 50, 84, 0.9);
+  box-shadow: 0 1px 0 0 rgba(91, 192, 235, 0.06);
 }
 
 /* Ice rink pattern */
@@ -132,8 +133,9 @@ html {
 
 .dark .ice-pattern {
   background-image:
-    radial-gradient(ellipse at center, transparent 0%, rgba(91, 192, 235, 0.04) 100%),
-    linear-gradient(180deg, #0b1120 0%, #0d1526 100%);
+    radial-gradient(ellipse 80% 50% at 50% -10%, rgba(91, 192, 235, 0.08) 0%, transparent 60%),
+    radial-gradient(ellipse 60% 40% at 80% 80%, rgba(4, 30, 66, 0.3) 0%, transparent 60%),
+    linear-gradient(180deg, #07101c 0%, #0a1523 100%);
 }
 
 /* Rink lines */
@@ -336,7 +338,7 @@ html {
 
 /* Card hover effects */
 .card-hover {
-  transition: all 0.3s;
+  transition: all 0.25s;
 }
 
 .card-hover:hover {
@@ -345,7 +347,11 @@ html {
 }
 
 .dark .card-hover:hover {
-  box-shadow: 0 4px 24px -4px rgba(91, 192, 235, 0.12), 0 0 0 1px rgba(91, 192, 235, 0.08);
+  box-shadow:
+    0 4px 24px -4px rgba(91, 192, 235, 0.15),
+    0 0 0 1px rgba(91, 192, 235, 0.12),
+    0 0 40px -10px rgba(91, 192, 235, 0.06);
+  transform: translateY(-2px);
 }
 
 /* Button pulse animation */
@@ -366,4 +372,31 @@ html {
     transform: scale(0.95);
     box-shadow: 0 0 0 0 rgba(200, 16, 46, 0);
   }
+}
+
+/* ── Dark mode page background ── */
+.dark body {
+  background-color: var(--color-background);
+  background-image:
+    radial-gradient(ellipse 100% 60% at 50% 0%, rgba(91, 192, 235, 0.07) 0%, transparent 55%);
+  background-attachment: fixed;
+}
+
+/* ── Ice border glow (interactive elements in dark) ── */
+.dark .ice-border-hover:hover {
+  border-color: rgba(91, 192, 235, 0.35);
+  box-shadow: 0 0 0 1px rgba(91, 192, 235, 0.1), 0 4px 16px -4px rgba(91, 192, 235, 0.15);
+}
+
+/* ── Scrollbar dark ── */
+.dark ::-webkit-scrollbar-track {
+  background: var(--color-surface);
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background: var(--color-border-dark);
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: rgba(91, 192, 235, 0.4);
 }
