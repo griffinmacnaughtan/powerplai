@@ -2,12 +2,13 @@
 
 import { useRef, useEffect, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Trash2, Github, Linkedin, Bot, TrendingUp, Trophy, Target, Sun, Moon } from 'lucide-react'
+import { Trash2, Github, Linkedin, Bot, TrendingUp, Trophy, Target, Sun, Moon, Newspaper } from 'lucide-react'
 import { Logo, LogoText } from '@/components/Logo'
 import { ChatMessage } from '@/components/chat/ChatMessage'
 import { ChatInput } from '@/components/chat/ChatInput'
 import { SuggestedQueries } from '@/components/chat/SuggestedQueries'
 import { TypingIndicator } from '@/components/LoadingDots'
+import { AccuracyBadge } from '@/components/AccuracyBadge'
 import { Button } from '@/components/ui'
 import { useChat } from '@/hooks/useChat'
 
@@ -40,6 +41,10 @@ export default function Home() {
 
   const hasMessages = messages.length > 0
 
+  const handleDailyBriefing = () => {
+    sendMessage('daily briefing')
+  }
+
   return (
     <div className="h-screen flex flex-col overflow-hidden">
       {/* Header */}
@@ -54,9 +59,25 @@ export default function Home() {
               <span className="w-1.5 h-1.5 rounded-full bg-ice-dark animate-pulse" />
               LIVE
             </span>
+            <AccuracyBadge />
           </div>
 
           <div className="flex items-center gap-2">
+            {/* Daily Briefing button */}
+            <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.97 }}>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={handleDailyBriefing}
+                disabled={isLoading}
+                className="border-primary/30 text-primary hover:bg-primary/5 hover:border-primary/60 font-medium"
+                title="Get today's injury alerts, goalies, top picks, and best bets"
+              >
+                <Newspaper className="w-4 h-4" />
+                <span className="hidden sm:inline">Daily Briefing</span>
+              </Button>
+            </motion.div>
+
             <Button
               variant="ghost"
               size="sm"
@@ -135,6 +156,31 @@ export default function Home() {
                 Ask questions about NHL stats, compare players, get fantasy advice,
                 and explore analytics. Powered by real data and AI.
               </motion.p>
+
+              {/* Daily Briefing hero card */}
+              <motion.div
+                initial={{ y: 20, opacity: 0 }}
+                animate={{ y: 0, opacity: 1 }}
+                transition={{ delay: 0.35 }}
+                className="w-full max-w-sm mb-8"
+              >
+                <motion.button
+                  onClick={handleDailyBriefing}
+                  disabled={isLoading}
+                  whileHover={{ scale: 1.02, y: -2 }}
+                  whileTap={{ scale: 0.98 }}
+                  className="w-full flex items-center gap-4 px-5 py-4 rounded-2xl bg-gradient-to-r from-primary/10 via-primary/5 to-transparent border border-primary/20 hover:border-primary/40 shadow-card hover:shadow-soft transition-all text-left group"
+                >
+                  <div className="flex-shrink-0 w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center group-hover:bg-primary/20 transition-colors">
+                    <Newspaper className="w-5 h-5 text-primary" />
+                  </div>
+                  <div>
+                    <p className="font-semibold text-text-primary text-sm">Today's Daily Briefing</p>
+                    <p className="text-xs text-text-muted mt-0.5">Injuries · Goalies · Top picks · Best bets</p>
+                  </div>
+                  <span className="ml-auto text-primary opacity-0 group-hover:opacity-100 transition-opacity text-sm">→</span>
+                </motion.button>
+              </motion.div>
 
               {/* Feature badges */}
               <motion.div

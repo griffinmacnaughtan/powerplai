@@ -61,6 +61,7 @@ class QueryType:
     VALUE_BET = "value_bet"             # "Is McDavid +180 good value?"
     OLYMPICS = "olympics"               # "Olympic standings?" "How is McDavid doing in the Olympics?"
     SCHEDULE = "schedule"               # "What games are today?" "Who is playing tonight?"
+    DAILY_BRIEFING = "daily_briefing"   # "Give me today's briefing" / "Daily briefing" button
 
 
 class PowerplAICopilot:
@@ -167,6 +168,19 @@ class PowerplAICopilot:
 
         # Step 2: Fetch relevant data based on query type
         context_parts = []
+
+        # HIGHEST PRIORITY: Daily briefing
+        if classification.get("is_briefing_query") or classification.get("type") == "daily_briefing":
+            briefing_context = await self._fetch_daily_briefing(db)
+            if briefing_context:
+                context_parts.append(briefing_context)
+                sources.append({"type": "briefing", "data": "daily_briefing"})
+            response = await self._generate_response(user_query, "\n\n".join(context_parts), conversation_history, images)
+            return {
+                "response": response,
+                "sources": sources,
+                "query_type": "daily_briefing",
+            }
 
         # PRIORITY: Check for Olympic betting queries first (parlay, value bets, edges)
         if classification.get("is_olympics_query") and classification.get("is_edge_query"):
@@ -330,7 +344,7 @@ Query: "{query}"
 
 Respond with JSON only:
 {{
-    "type": "stats_lookup" | "comparison" | "trend_analysis" | "explainer" | "prediction" | "leaders" | "team_breakdown" | "matchup_prediction" | "tonight_prediction" | "trade_suggestion" | "value_comparison" | "edge_finder" | "regression" | "value_bet" | "olympics" | "schedule",
+    "type": "stats_lookup" | "comparison" | "trend_analysis" | "explainer" | "prediction" | "leaders" | "team_breakdown" | "matchup_prediction" | "tonight_prediction" | "trade_suggestion" | "value_comparison" | "edge_finder" | "regression" | "value_bet" | "olympics" | "schedule" | "daily_briefing",
     "players": ["player names mentioned"],
     "teams": ["team names or abbreviations - convert full names to abbreviations like TOR, BOS, EDM"],
     "countries": ["country names for Olympics - CAN, USA, SWE, FIN, RUS, CZE, SUI, GER, SVK, etc."],
@@ -346,6 +360,7 @@ Respond with JSON only:
     "is_regression_query": true if asking about regression, xG regression, due for goals, underperforming, overperforming, or shooting luck,
     "is_olympics_query": true if asking about Olympics, Olympic hockey, Team Canada/USA/Sweden, Milano Cortina 2026, or Olympic standings/stats,
     "is_schedule_query": true if asking about games today, tonight, what's playing, schedule, matchups,
+    "is_briefing_query": true if asking for a daily briefing, morning digest, lineup summary, or today's overview,
     "top_n": number if asking for top N players OR a specific rank (e.g. "top 3" = 3, "top 5" = 5, "23rd best" = 23, "10th" = 10, "who is ranked 15" = 15),
     "offered_odds": number if asking about a specific bet with odds (e.g. "+210" = 210, "-150" = -150)
 }}
@@ -392,7 +407,11 @@ Examples:
 - "Who is playing tonight?" -> type: "schedule", is_schedule_query: true
 - "Any games on right now?" -> type: "schedule", is_schedule_query: true
 - "What's the schedule for today?" -> type: "schedule", is_schedule_query: true
-- "Which teams play tonight?" -> type: "schedule", is_schedule_query: true"""
+- "Which teams play tonight?" -> type: "schedule", is_schedule_query: true
+- "Daily briefing" -> type: "daily_briefing", is_briefing_query: true
+- "Give me today's briefing" -> type: "daily_briefing", is_briefing_query: true
+- "Morning digest" -> type: "daily_briefing", is_briefing_query: true
+- "What do I need to know today?" -> type: "daily_briefing", is_briefing_query: true"""
                 }
             ],
         )
@@ -946,6 +965,21 @@ Examples:
                 date_label = "Tonight's" if target_date == date.today() else target_date.strftime('%A, %B %d')
                 predictions_text = [f"**{date_label} Games - {target_date.strftime('%B %d, %Y')}**\n"]
 
+                # ── Fetch live market odds once for all games ──────────
+                market_probs: dict[str, float] = {}
+                try:
+                    from backend.src.agents.odds_value import OddsValueCalculator
+                    odds_calc = OddsValueCalculator(db)
+                    all_odds_raw, _ = await odds_calc.get_live_odds()
+                    for lines in (all_odds_raw or {}).values():
+                        for ol in lines:
+                            if "goal" in ol.market.lower() or "scorer" in ol.market.lower():
+                                key = ol.player_name.lower()
+                                if key not in market_probs or ol.implied_probability < market_probs[key]:
+                                    market_probs[key] = ol.implied_probability
+                except Exception:
+                    pass  # odds are optional — degrade gracefully
+
                 all_top_scorers = []
                 for game in games[:10]:  # Process up to 10 games
                     try:
@@ -961,9 +995,14 @@ Examples:
                         predictions_text.append("\n**Top Goal Scorers:**")
                         for i, pred in enumerate(matchup.top_scorers[:5], 1):
                             prob_pct = int(pred.prob_goal * 100)
-                            predictions_text.append(
-                                f"{i}. **{pred.player_name}** ({pred.team}) - {prob_pct}% chance to score"
-                            )
+                            line = f"{i}. **{pred.player_name}** ({pred.team}) — Model: {prob_pct}%"
+                            mkt = market_probs.get(pred.player_name.lower())
+                            if mkt:
+                                mkt_pct = int(mkt * 100)
+                                edge = prob_pct - mkt_pct
+                                edge_str = f" 🔥 +{edge}% edge" if edge >= 5 else (f" ⚠️ {edge}% edge" if edge < -5 else "")
+                                line += f" | Market: {mkt_pct}%{edge_str}"
+                            predictions_text.append(line)
                             if pred.factors:
                                 predictions_text.append(f"   _{pred.factors[0]}_")
                     except Exception as e:
@@ -973,14 +1012,29 @@ Examples:
                 # Add overall top scorers across all tonight's games (top 15 for full follow-up coverage)
                 all_top_scorers.sort(key=lambda p: p.prob_goal, reverse=True)
                 if all_top_scorers:
+                    has_odds = bool(market_probs)
                     predictions_text.append("\n### Overall Best Bets Tonight")
+                    if has_odds:
+                        predictions_text.append(
+                            "_Model probability vs live market implied probability. "
+                            "Positive edge = model sees more value than the market._\n"
+                        )
                     for i, pred in enumerate(all_top_scorers[:15], 1):
                         prob_pct = int(pred.prob_goal * 100)
                         matchup_str = f"vs {pred.opponent}" if pred.is_home else f"@ {pred.opponent}"
-                        predictions_text.append(
-                            f"{i}. **{pred.player_name}** ({pred.team} {matchup_str}) - "
-                            f"{prob_pct}% goal, {int(pred.prob_point * 100)}% point"
+                        line = (
+                            f"{i}. **{pred.player_name}** ({pred.team} {matchup_str}) — "
+                            f"Model: {prob_pct}% | Point: {int(pred.prob_point * 100)}%"
                         )
+                        mkt = market_probs.get(pred.player_name.lower())
+                        if mkt:
+                            mkt_pct = int(mkt * 100)
+                            edge = prob_pct - mkt_pct
+                            edge_str = f" 🔥 **Edge: +{edge}%**" if edge >= 5 else (
+                                f" ⚠️ Edge: {edge}%" if edge < -5 else f" Edge: {edge:+d}%"
+                            )
+                            line += f" | Market: {mkt_pct}%{edge_str}"
+                        predictions_text.append(line)
 
                 return "\n".join(predictions_text)
             except Exception as e:
@@ -1899,6 +1953,173 @@ Examples:
                 lines.append(f"- {game['away']} @ {game['home']} ({game['round'].title()})")
 
         return "\n".join(lines)
+
+    async def _fetch_daily_briefing(self, db: AsyncSession) -> str | None:
+        """
+        Assemble a comprehensive daily briefing covering:
+        - Tonight's game schedule
+        - Key injury alerts (Out / LTIR / Day-to-Day)
+        - Confirmed or expected starting goalies
+        - Top 5 scoring picks tonight (model + market odds if available)
+        - Top 2 edges/best bets tonight
+        """
+        from datetime import date as _date
+        sections: list[str] = []
+        today_str = _date.today().strftime("%A, %B %-d")
+
+        sections.append(f"## 📋 Daily Briefing — {today_str}\n")
+
+        # ── 1. Tonight's schedule ──────────────────────────────────────
+        try:
+            from backend.src.agents.daily_audit import get_todays_games_unified
+            schedule_data = await get_todays_games_unified(db)
+            games = schedule_data.nhl_games if hasattr(schedule_data, "nhl_games") else (
+                schedule_data.get("games", []) if isinstance(schedule_data, dict) else []
+            )
+            if games:
+                sections.append("### 🏒 Tonight's Games")
+                for g in games:
+                    home = g.get("home_team") or g.get("home_team_abbrev", "")
+                    away = g.get("away_team") or g.get("away_team_abbrev", "")
+                    start = g.get("start_time", "TBD")
+                    sections.append(f"- {away} @ {home}  ·  {start} ET")
+            else:
+                sections.append("### 🏒 Tonight's Games\n- No NHL games scheduled today.")
+        except Exception as e:
+            logger.warning("briefing_schedule_failed", error=str(e))
+            sections.append("### 🏒 Tonight's Games\n- Schedule unavailable.")
+
+        # ── 2. Key injury alerts (Out / LTIR / Day-to-Day only) ────────
+        try:
+            from backend.src.ingestion.espn_injuries import get_all_injuries
+            injury_data = await get_all_injuries(db)
+            priority_statuses = {"Out", "LTIR", "Day-to-Day", "IR", "DTD"}
+            alerts: list[str] = []
+            for team, players in injury_data.get("injuries_by_team", {}).items():
+                for p in players:
+                    if p.get("status") in priority_statuses:
+                        alerts.append(f"- **{p['player_name']}** ({team}) — {p['status']}: {p.get('description', '')}")
+            if alerts:
+                sections.append(f"\n### 🚑 Injury Alerts ({len(alerts)} players)")
+                sections.extend(alerts[:12])  # cap at 12 to avoid wall of text
+                if len(alerts) > 12:
+                    sections.append(f"  _...and {len(alerts) - 12} more_")
+            else:
+                sections.append("\n### 🚑 Injury Alerts\n- No major injuries reported.")
+        except Exception as e:
+            logger.warning("briefing_injuries_failed", error=str(e))
+
+        # ── 3. Starting goalies for tonight ────────────────────────────
+        try:
+            result = await db.execute(text("""
+                SELECT DISTINCT ON (gs.team_abbrev)
+                    gs.team_abbrev, gs.goalie_name, gs.save_pct, gs.games_played
+                FROM goalie_stats gs
+                JOIN games g ON (
+                    g.home_team_abbrev = gs.team_abbrev OR g.away_team_abbrev = gs.team_abbrev
+                )
+                WHERE g.game_date = CURRENT_DATE
+                  AND g.state NOT IN ('OFF', 'FINAL')
+                ORDER BY gs.team_abbrev, gs.games_played DESC
+            """))
+            goalies = result.fetchall()
+            if goalies:
+                sections.append("\n### 🧤 Expected Starters Tonight")
+                for row in goalies:
+                    sv_pct = f"{row.save_pct:.3f}" if row.save_pct else "N/A"
+                    sections.append(f"- **{row.team_abbrev}**: {row.goalie_name} (SV% {sv_pct})")
+        except Exception as e:
+            logger.warning("briefing_goalies_failed", error=str(e))
+
+        # ── 4. Top scoring picks tonight (model + market odds) ─────────
+        try:
+            from backend.src.agents.predictions import PredictionEngine
+            from backend.src.agents.odds_value import OddsValueCalculator
+
+            prediction_engine = PredictionEngine()
+
+            # Fetch tonight's games from DB
+            games_result = await db.execute(text("""
+                SELECT home_team_abbrev, away_team_abbrev
+                FROM games
+                WHERE game_date = CURRENT_DATE
+                  AND state NOT IN ('OFF', 'FINAL')
+                LIMIT 10
+            """))
+            tonight_games = games_result.fetchall()
+
+            if tonight_games:
+                # Try to get live odds once for all games
+                odds_calculator = OddsValueCalculator(db)
+                all_odds_raw, _ = await odds_calculator.get_live_odds()  # dict[game_key -> list[OddsLine]]
+                # Build player_name -> best implied_probability from any "anytime_scorer" or "player_goals" market
+                market_probs: dict[str, float] = {}
+                for lines in (all_odds_raw or {}).values():
+                    for line in lines:
+                        if "goal" in line.market.lower() or "scorer" in line.market.lower():
+                            name_key = line.player_name.lower()
+                            # Keep the best (lowest implied prob = truest market price)
+                            if name_key not in market_probs or line.implied_probability < market_probs[name_key]:
+                                market_probs[name_key] = line.implied_probability
+
+                all_scorers = []
+                for game_row in tonight_games:
+                    try:
+                        matchup = await prediction_engine.get_matchup_prediction(
+                            db, game_row.home_team_abbrev, game_row.away_team_abbrev,
+                            _date.today(), top_n=8
+                        )
+                        all_scorers.extend(matchup.top_scorers)
+                    except Exception:
+                        continue
+
+                all_scorers.sort(key=lambda p: p.prob_goal, reverse=True)
+                top_picks = all_scorers[:5]
+
+                if top_picks:
+                    sections.append("\n### 🎯 Top Scoring Picks Tonight")
+                    for i, pred in enumerate(top_picks, 1):
+                        model_pct = int(pred.prob_goal * 100)
+                        matchup_str = f"vs {pred.opponent}" if pred.is_home else f"@ {pred.opponent}"
+                        line = f"{i}. **{pred.player_name}** ({pred.team} {matchup_str}) — Model: **{model_pct}%**"
+
+                        # Attach market odds if available
+                        mkt = market_probs.get(pred.player_name.lower())
+                        if mkt:
+                            mkt_pct = int(mkt * 100)
+                            edge_pct = model_pct - mkt_pct
+                            edge_tag = f" 🔥 +{edge_pct}% edge" if edge_pct >= 5 else ""
+                            line += f" | Market: {mkt_pct}%{edge_tag}"
+
+                        if pred.factors:
+                            line += f"  _{pred.factors[0]}_"
+                        sections.append(line)
+        except Exception as e:
+            logger.warning("briefing_predictions_failed", error=str(e))
+
+        # ── 5. Top 2 edges / best bets ─────────────────────────────────
+        try:
+            from backend.src.agents.edge_finder import EdgeFinder
+            edge_finder = EdgeFinder()
+            edge_report = await edge_finder.find_edges(db)
+            top_edges = edge_report.top_edges[:2] if edge_report and edge_report.top_edges else []
+            if top_edges:
+                sections.append("\n### 💰 Best Bets Tonight")
+                for edge in top_edges:
+                    grade = edge.edge_grade
+                    model_pct = int(edge.prob_goal * 100)
+                    sections.append(
+                        f"- **{edge.player_name}** ({edge.team} vs {edge.opponent}) "
+                        f"Grade: **{grade}** | {model_pct}% goal | {edge.suggested_bet}"
+                    )
+        except Exception as e:
+            logger.warning("briefing_edges_failed", error=str(e))
+
+        if len(sections) <= 2:
+            return None
+
+        sections.append("\n---\n_Data from NHL API, ESPN, and MoneyPuck. Refreshed at startup._")
+        return "\n".join(sections)
 
     async def _fetch_todays_schedule(
         self,

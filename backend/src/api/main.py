@@ -74,6 +74,24 @@ async def lifespan(app: FastAPI):
     from backend.src.db.migrations import run_migrations
     await run_migrations()
 
+    # Create user_feedback table if it doesn't exist
+    try:
+        async with async_session_maker() as session:
+            await session.execute(text("""
+                CREATE TABLE IF NOT EXISTS user_feedback (
+                    id SERIAL PRIMARY KEY,
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    query_type VARCHAR(50),
+                    feedback_type VARCHAR(20) NOT NULL,
+                    category VARCHAR(50),
+                    comment TEXT,
+                    response_preview TEXT
+                )
+            """))
+            await session.commit()
+    except Exception as e:
+        logger.warning("feedback_table_create_failed", error=str(e))
+
     # Run startup updates in background (don't block startup)
     # This includes: schedule refresh, game log catch-up, injuries, team/goalie stats
     if settings.auto_update_enabled:
@@ -2329,6 +2347,91 @@ async def get_model_info():
             "Team pace adjustment",
         ],
         "note": "This is NOT an ensemble model. It uses fixed weights on statistical factors, not multiple ML models.",
+    }
+
+
+# -------------------------------------------------------------------------
+# User Feedback endpoints
+# -------------------------------------------------------------------------
+
+
+class FeedbackRequest(BaseModel):
+    feedback_type: str          # "thumbs_up" or "thumbs_down"
+    query_type: str = ""        # e.g. "tonight_prediction", "stats_lookup"
+    category: str = ""          # "incorrect_stats", "wrong_prediction", etc.
+    comment: str = ""           # Optional free-text from user
+    response_preview: str = ""  # First ~200 chars of the AI response
+
+
+@app.post("/api/feedback")
+@limiter.limit("30/minute")
+async def submit_feedback(
+    request: Request,
+    body: FeedbackRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Submit thumbs-up / thumbs-down feedback on an AI response."""
+    try:
+        await db.execute(
+            text("""
+                INSERT INTO user_feedback
+                    (feedback_type, query_type, category, comment, response_preview)
+                VALUES
+                    (:feedback_type, :query_type, :category, :comment, :response_preview)
+            """),
+            {
+                "feedback_type": body.feedback_type,
+                "query_type": body.query_type[:50],
+                "category": body.category[:50],
+                "comment": body.comment[:500],
+                "response_preview": body.response_preview[:300],
+            },
+        )
+        await db.commit()
+        return {"status": "ok"}
+    except Exception as e:
+        logger.error("feedback_insert_failed", error=str(e))
+        raise HTTPException(status_code=500, detail="Could not save feedback")
+
+
+@app.get("/api/feedback/stats")
+async def get_feedback_stats(
+    days: int = 30,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return aggregate feedback counts and top complaint categories."""
+    result = await db.execute(
+        text("""
+            SELECT
+                feedback_type,
+                category,
+                COUNT(*) as count
+            FROM user_feedback
+            WHERE created_at >= NOW() - (CAST(:days AS INTEGER) * INTERVAL '1 day')
+            GROUP BY feedback_type, category
+            ORDER BY count DESC
+        """),
+        {"days": days},
+    )
+    rows = result.fetchall()
+
+    thumbs_up = sum(r.count for r in rows if r.feedback_type == "thumbs_up")
+    thumbs_down = sum(r.count for r in rows if r.feedback_type == "thumbs_down")
+    total = thumbs_up + thumbs_down
+    satisfaction = round(thumbs_up / total * 100) if total else None
+
+    categories = [
+        {"category": r.category, "count": r.count}
+        for r in rows if r.feedback_type == "thumbs_down" and r.category
+    ]
+
+    return {
+        "period_days": days,
+        "thumbs_up": thumbs_up,
+        "thumbs_down": thumbs_down,
+        "total": total,
+        "satisfaction_pct": satisfaction,
+        "top_complaint_categories": categories[:5],
     }
 
 

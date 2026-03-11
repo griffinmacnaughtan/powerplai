@@ -292,6 +292,33 @@ class PowerplAIAPI {
     }
     return response.json()
   }
+
+  async submitFeedback(payload: {
+    feedback_type: 'thumbs_up' | 'thumbs_down'
+    query_type?: string
+    category?: string
+    comment?: string
+    response_preview?: string
+  }): Promise<void> {
+    await fetch(`${this.baseUrl}/api/feedback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+  }
+
+  async getAccuracySummary(days = 7): Promise<{
+    nhl: { goal_hit_rate: string; validated: number; total: number } | null
+    olympics: { goal_hit_rate: string; validated: number; total: number } | null
+  }> {
+    try {
+      const response = await fetch(`${this.baseUrl}/api/audit/accuracy-summary?days=${days}`)
+      if (!response.ok) return { nhl: null, olympics: null }
+      return response.json()
+    } catch {
+      return { nhl: null, olympics: null }
+    }
+  }
 }
 
 export const api = new PowerplAIAPI()
