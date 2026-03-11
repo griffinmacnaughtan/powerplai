@@ -183,28 +183,28 @@ html {
 
 /* ── Markdown prose ── */
 .prose {
-  font-size: 0.875rem;
+  font-size: 0.8125rem;
   color: var(--color-text-primary);
-  line-height: 1.6;
+  line-height: 1.5;
 }
 
 .prose h1, .prose h2, .prose h3 {
   font-weight: 600;
   color: #041E42;
-  margin-top: 1rem;
-  margin-bottom: 0.5rem;
+  margin-top: 0.75rem;
+  margin-bottom: 0.35rem;
 }
 
 .dark .prose h1, .dark .prose h2, .dark .prose h3 {
   color: #5bc0eb;
 }
 
-.prose h1 { font-size: 1.125rem; }
-.prose h2 { font-size: 1rem; }
-.prose h3 { font-size: 0.9375rem; }
+.prose h1 { font-size: 1rem; }
+.prose h2 { font-size: 0.9375rem; }
+.prose h3 { font-size: 0.875rem; }
 
 .prose p {
-  margin-bottom: 0.75rem;
+  margin-bottom: 0.5rem;
 }
 
 .prose strong {
@@ -222,9 +222,9 @@ html {
 }
 
 .prose ul, .prose ol {
-  margin-top: 0.5rem;
-  margin-bottom: 0.5rem;
-  padding-left: 1.25rem;
+  margin-top: 0.35rem;
+  margin-bottom: 0.35rem;
+  padding-left: 1.125rem;
 }
 
 .prose ul {
@@ -236,7 +236,7 @@ html {
 }
 
 .prose li {
-  margin-bottom: 0.25rem;
+  margin-bottom: 0.2rem;
 }
 
 .prose code {
@@ -315,7 +315,7 @@ html {
 
 .prose th {
   text-align: left;
-  padding: 0.75rem;
+  padding: 0.5rem 0.625rem;
   border-bottom: 2px solid #041E42;
   font-weight: 600;
   color: #041E42;
@@ -328,7 +328,7 @@ html {
 }
 
 .prose td {
-  padding: 0.75rem;
+  padding: 0.5rem 0.625rem;
   border-bottom: 1px solid var(--color-border);
 }
 
