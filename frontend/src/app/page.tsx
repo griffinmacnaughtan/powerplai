@@ -9,6 +9,7 @@ import { ChatInput } from '@/components/chat/ChatInput'
 import { SuggestedQueries } from '@/components/chat/SuggestedQueries'
 import { TypingIndicator } from '@/components/LoadingDots'
 import { AccuracyBadge } from '@/components/AccuracyBadge'
+import { ParlayTracker } from '@/components/ParlayTracker'
 import { Button } from '@/components/ui'
 import { useChat } from '@/hooks/useChat'
 
@@ -182,6 +183,9 @@ export default function Home() {
                   <span className="ml-auto text-primary opacity-0 group-hover:opacity-100 transition-opacity text-sm">→</span>
                 </motion.button>
               </motion.div>
+
+              {/* Parlay tracker streak */}
+              <ParlayTracker />
 
               {/* Feature badges */}
               <motion.div

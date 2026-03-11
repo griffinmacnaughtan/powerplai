@@ -307,6 +307,35 @@ class PowerplAIAPI {
     })
   }
 
+  async getParlayRecord(days = 30): Promise<{
+    period_days: number
+    by_type: Array<{
+      parlay_name: string
+      total: number
+      wins: number
+      losses: number
+      win_rate: string
+      avg_legs_hit_pct: string
+      avg_model_prob_pct: string
+    }>
+    recent: Array<{
+      date: string
+      name: string
+      combined_prob: string
+      result: string | null
+      legs_hit: number | null
+      legs_total: number | null
+    }>
+  }> {
+    try {
+      const response = await fetch(`${this.baseUrl}/api/parlays/record?days=${days}`)
+      if (!response.ok) return { period_days: days, by_type: [], recent: [] }
+      return response.json()
+    } catch {
+      return { period_days: days, by_type: [], recent: [] }
+    }
+  }
+
   async getAccuracySummary(days = 7): Promise<{
     nhl: { goal_hit_rate: string; validated: number; total: number } | null
     olympics: { goal_hit_rate: string; validated: number; total: number } | null
