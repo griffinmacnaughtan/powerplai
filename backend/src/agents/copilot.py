@@ -1363,38 +1363,79 @@ Examples:
         db: AsyncSession,
         classification: dict,
     ) -> str | None:
-        """Fetch betting edge analysis for tonight's games."""
+        """Fetch betting edge analysis for tonight's games, with live odds comparison."""
         from backend.src.agents.edge_finder import EdgeFinder
+        from backend.src.agents.odds_value import OddsValueCalculator
 
+        # Run edge finder and live odds fetch concurrently
         finder = EdgeFinder(db)
-        report = await finder.find_tonight_edges(min_grade="B+", max_results=10)
+        calc = OddsValueCalculator(db)
+
+        import asyncio
+        report, (live_odds, remaining) = await asyncio.gather(
+            finder.find_tonight_edges(min_grade="B+", max_results=15),
+            calc.get_live_odds("icehockey_nhl"),
+        )
 
         if not report.top_edges:
             return "No games scheduled tonight or no significant edges found."
 
-        lines = []
-        lines.append(f"**Tonight's Betting Edges** ({report.game_count} games analyzed)\n")
-        lines.append(f"Found {report.edges_found} opportunities: {report.a_plus_edges} A+, {report.a_edges} A, {report.b_plus_edges} B+\n")
+        # Build lookup: player_name_lower -> best OddsLine across sportsbooks
+        best_odds_by_player: dict[str, object] = {}
+        for odds_list in live_odds.values():
+            for line in odds_list:
+                key = line.player_name.lower()
+                existing = best_odds_by_player.get(key)
+                # Prefer the line with the highest payout for the bettor
+                if existing is None or line.odds > existing.odds:
+                    best_odds_by_player[key] = line
 
-        lines.append("| Player | Team | Opp | Grade | P(Goal) | Key Edge |")
-        lines.append("|--------|------|-----|-------|---------|----------|")
+        has_live_odds = bool(live_odds)
+        odds_label = f"Live odds ({remaining} API calls remaining)" if has_live_odds else "No live odds available — model estimates only"
+
+        lines = []
+        lines.append(f"**Tonight's Betting Edges** ({report.game_count} games, {report.edges_found} opportunities)\n")
+        lines.append(f"Odds source: {odds_label}\n")
+
+        if has_live_odds:
+            lines.append("| Player | Team | Grade | Model | Market | Edge | Best Odds | Book | Key Factor |")
+            lines.append("|--------|------|-------|-------|--------|------|-----------|------|------------|")
+        else:
+            lines.append("| Player | Team | Grade | Model | Est. Fair Odds | Key Factor |")
+            lines.append("|--------|------|-------|-------|----------------|------------|")
 
         for edge in report.top_edges[:10]:
             key_factor = edge.edge_factors[0].description if edge.edge_factors else "Multiple factors"
-            # Truncate long descriptions
-            if len(key_factor) > 40:
-                key_factor = key_factor[:37] + "..."
-            lines.append(
-                f"| {edge.player_name} | {edge.team} | {edge.opponent} | "
-                f"**{edge.edge_grade}** | {edge.prob_goal:.1%} | {key_factor} |"
-            )
+            if len(key_factor) > 45:
+                key_factor = key_factor[:42] + "..."
 
-        lines.append("\n**Edge Types Explained:**")
-        lines.append("- Hot Streak: Recent form significantly above season average")
-        lines.append("- Weak Goalie: Opponent goalie below .895 SV%")
-        lines.append("- High Pace: Expected 6.5+ total goals in game")
-        lines.append("- xG Regression: Goals significantly below expected (due for more)")
-        lines.append("- Home Cooking: Strong home/away splits")
+            market_line = best_odds_by_player.get(edge.player_name.lower())
+
+            if has_live_odds and market_line:
+                market_pct = f"{market_line.implied_probability:.1%}"
+                edge_pct = edge.prob_goal - market_line.implied_probability
+                edge_str = f"+{edge_pct:.1%}" if edge_pct >= 0 else f"{edge_pct:.1%}"
+                lines.append(
+                    f"| {edge.player_name} | {edge.team} | **{edge.edge_grade}** | "
+                    f"{edge.prob_goal:.1%} | {market_pct} | {edge_str} | "
+                    f"{market_line.odds:+d} | {market_line.sportsbook} | {key_factor} |"
+                )
+            elif has_live_odds:
+                # No odds found for this player
+                lines.append(
+                    f"| {edge.player_name} | {edge.team} | **{edge.edge_grade}** | "
+                    f"{edge.prob_goal:.1%} | — | — | — | No line | {key_factor} |"
+                )
+            else:
+                lines.append(
+                    f"| {edge.player_name} | {edge.team} | **{edge.edge_grade}** | "
+                    f"{edge.prob_goal:.1%} | {edge.estimated_fair_odds:+d} | {key_factor} |"
+                )
+
+        lines.append("\n**Reading the table:**")
+        lines.append("- Model = PowerplAI goal probability | Market = sportsbook implied probability")
+        lines.append("- Edge = model minus market (positive = model sees more value than sportsbook)")
+        lines.append("- Best Odds = best available American odds across books")
 
         return "\n".join(lines)
 
