@@ -100,6 +100,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("audit_table_init_failed", error=str(e))
 
+    # Create parlay tracker table if it doesn't exist
+    try:
+        async with async_session_maker() as db:
+            from backend.src.agents.parlay_tracker import create_parlay_table
+            await create_parlay_table(db)
+    except Exception as e:
+        logger.warning("parlay_table_init_failed", error=str(e))
+
     # Run startup updates in background (don't block startup)
     # This includes: schedule refresh, game log catch-up, injuries, team/goalie stats
     if settings.auto_update_enabled:
@@ -2441,6 +2449,58 @@ async def get_feedback_stats(
         "satisfaction_pct": satisfaction,
         "top_complaint_categories": categories[:5],
     }
+
+
+# -------------------------------------------------------------------------
+# Parlay Tracker endpoints
+# -------------------------------------------------------------------------
+
+
+@app.get("/api/parlays/today")
+async def get_today_parlays(db: AsyncSession = Depends(get_db)):
+    """Return today's generated parlays. Generates them if not yet done."""
+    from backend.src.agents.parlay_tracker import generate_daily_parlays, get_parlay_record
+    from datetime import date as date_type
+    await generate_daily_parlays(db)  # no-op if already generated
+    from backend.src.agents.parlay_tracker import get_today_parlays_context
+    context = await get_today_parlays_context(db)
+    return {"context": context, "date": str(date_type.today())}
+
+
+@app.get("/api/parlays/record")
+async def get_parlay_record_endpoint(
+    days: int = 30,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return win/loss record and leg-level accuracy over the past N days."""
+    from backend.src.agents.parlay_tracker import get_parlay_record
+    return await get_parlay_record(db, days)
+
+
+@app.post("/api/parlays/validate")
+async def trigger_parlay_validation(
+    game_date: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Manually trigger validation for a specific date (YYYY-MM-DD). Defaults to yesterday."""
+    from backend.src.agents.parlay_tracker import validate_parlays
+    from datetime import date as date_type, timedelta
+    d = date_type.fromisoformat(game_date) if game_date else date_type.today() - timedelta(days=1)
+    result = await validate_parlays(db, d)
+    return result
+
+
+@app.post("/api/parlays/generate")
+async def trigger_parlay_generation(
+    game_date: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Manually trigger parlay generation for a date (YYYY-MM-DD). Defaults to today."""
+    from backend.src.agents.parlay_tracker import generate_daily_parlays
+    from datetime import date as date_type
+    d = date_type.fromisoformat(game_date) if game_date else date_type.today()
+    parlays = await generate_daily_parlays(db, d)
+    return {"generated": len(parlays), "date": str(d)}
 
 
 # -------------------------------------------------------------------------

@@ -442,6 +442,39 @@ async def start_scheduler():
                 replace_existing=True,
             )
 
+    # Generate parlays daily at 2 PM UTC (before most games)
+    async def run_parlay_generation():
+        try:
+            from backend.src.db.database import async_session_maker
+            from backend.src.agents.parlay_tracker import generate_daily_parlays
+            async with async_session_maker() as db:
+                await generate_daily_parlays(db)
+        except Exception as e:
+            logger.error("parlay_generation_failed", error=str(e))
+
+    # Validate yesterday's parlays at 9 AM UTC (after overnight scoring)
+    async def run_parlay_validation():
+        try:
+            from backend.src.db.database import async_session_maker
+            from backend.src.agents.parlay_tracker import validate_parlays
+            async with async_session_maker() as db:
+                await validate_parlays(db)
+        except Exception as e:
+            logger.error("parlay_validation_failed", error=str(e))
+
+    _scheduler.add_job(
+        run_parlay_generation,
+        CronTrigger(hour=14, minute=0),
+        id="parlay_generate",
+        replace_existing=True,
+    )
+    _scheduler.add_job(
+        run_parlay_validation,
+        CronTrigger(hour=9, minute=0),
+        id="parlay_validate",
+        replace_existing=True,
+    )
+
     _scheduler.start()
     logger.info("scheduler_started", jobs=len(_scheduler.get_jobs()))
 

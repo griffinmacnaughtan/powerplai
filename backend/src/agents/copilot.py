@@ -67,6 +67,7 @@ class QueryType:
     OLYMPICS = "olympics"               # "Olympic standings?" "How is McDavid doing in the Olympics?"
     SCHEDULE = "schedule"               # "What games are today?" "Who is playing tonight?"
     DAILY_BRIEFING = "daily_briefing"   # "Give me today's briefing" / "Daily briefing" button
+    PARLAY_TRACK = "parlay_track"       # "Show me today's parlays" / "How are the parlays doing?"
 
 
 class PowerplAICopilot:
@@ -185,6 +186,28 @@ class PowerplAICopilot:
                 "response": response,
                 "sources": sources,
                 "query_type": "daily_briefing",
+            }
+
+        # PRIORITY: Parlay tracker queries
+        if classification.get("is_parlay_query") or classification.get("type") == "parlay_track":
+            from backend.src.agents.parlay_tracker import get_today_parlays_context, get_parlay_record
+            parlay_context = await get_today_parlays_context(db)
+            record = await get_parlay_record(db, days=30)
+            context_parts.append(parlay_context)
+            if record.get("by_type"):
+                record_lines = ["**Parlay Record (Last 30 Days)**"]
+                for row in record["by_type"]:
+                    record_lines.append(
+                        f"- {row['parlay_name']}: {row['wins']}W / {row['losses']}L "
+                        f"({row['win_rate']} win rate), avg leg hit rate: {row['avg_legs_hit_pct']}"
+                    )
+                context_parts.append("\n".join(record_lines))
+            sources.append({"type": "parlay_tracker", "data": "model_parlays"})
+            response = await self._generate_response(user_query, "\n\n".join(context_parts), conversation_history, images)
+            return {
+                "response": response,
+                "sources": sources,
+                "query_type": "parlay_track",
             }
 
         # PRIORITY: Check for Olympic betting queries first (parlay, value bets, edges)
@@ -366,6 +389,7 @@ Respond with JSON only:
     "is_olympics_query": true if asking about Olympics, Olympic hockey, Team Canada/USA/Sweden, Milano Cortina 2026, or Olympic standings/stats,
     "is_schedule_query": true if asking about games today, tonight, what's playing, schedule, matchups,
     "is_briefing_query": true if asking for a daily briefing, morning digest, lineup summary, or today's overview,
+    "is_parlay_query": true if asking about today's parlays, model picks, parlay tracker, parlay record, or how parlays are performing,
     "top_n": number if asking for top N players OR a specific rank (e.g. "top 3" = 3, "top 5" = 5, "23rd best" = 23, "10th" = 10, "who is ranked 15" = 15),
     "offered_odds": number if asking about a specific bet with odds (e.g. "+210" = 210, "-150" = -150)
 }}
@@ -416,7 +440,13 @@ Examples:
 - "Daily briefing" -> type: "daily_briefing", is_briefing_query: true
 - "Give me today's briefing" -> type: "daily_briefing", is_briefing_query: true
 - "Morning digest" -> type: "daily_briefing", is_briefing_query: true
-- "What do I need to know today?" -> type: "daily_briefing", is_briefing_query: true"""
+- "What do I need to know today?" -> type: "daily_briefing", is_briefing_query: true
+- "Show me today's parlays" -> type: "parlay_track", is_parlay_query: true
+- "What parlays do you have today?" -> type: "parlay_track", is_parlay_query: true
+- "How are the model parlays doing?" -> type: "parlay_track", is_parlay_query: true
+- "Parlay record" -> type: "parlay_track", is_parlay_query: true
+- "How accurate are the model picks?" -> type: "parlay_track", is_parlay_query: true
+- "Show me the parlay tracker" -> type: "parlay_track", is_parlay_query: true"""
                 }
             ],
         )
