@@ -18,16 +18,16 @@
 
 /* ── Dark theme ── */
 .dark {
-  --color-background: #090e1a;
-  --color-surface: #101623;
-  --color-surface-elevated: #171f30;
-  --color-surface-hover: #1e2840;
-  --color-border: #263045;
-  --color-border-dark: #304060;
+  --color-background: #0b1120;
+  --color-surface: #141e30;
+  --color-surface-elevated: #1b2640;
+  --color-surface-hover: #223050;
+  --color-border: #2e3f5c;
+  --color-border-dark: #3e5278;
 
-  --color-text-primary: #e2e8f4;
-  --color-text-secondary: #8fa3bf;
-  --color-text-muted: #526070;
+  --color-text-primary: #e8eef8;
+  --color-text-secondary: #94aac4;
+  --color-text-muted: #5a7090;
 }
 
 /* ── Scrollbar ── */
@@ -117,10 +117,10 @@ html {
 }
 
 .dark .glass {
-  background: rgba(9, 14, 26, 0.88);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border-color: rgba(38, 48, 69, 0.8);
+  background: rgba(11, 17, 32, 0.93);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-color: rgba(46, 63, 92, 0.95);
 }
 
 /* Ice rink pattern */

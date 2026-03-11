@@ -71,7 +71,7 @@ export default function Home() {
                 size="sm"
                 onClick={handleDailyBriefing}
                 disabled={isLoading}
-                className="border-primary/30 text-primary hover:bg-primary/5 hover:border-primary/60 font-medium"
+                className="border-primary/30 dark:border-ice/30 text-primary dark:text-ice hover:bg-primary/5 dark:hover:bg-ice/5 hover:border-primary/60 dark:hover:border-ice/60 font-medium"
                 title="Get today's injury alerts, goalies, top picks, and best bets"
               >
                 <Newspaper className="w-4 h-4" />
@@ -145,7 +145,7 @@ export default function Home() {
                 transition={{ delay: 0.2 }}
                 className="text-3xl sm:text-4xl font-bold text-center mb-2"
               >
-                <span className="text-primary">Your AI-Powered </span>
+                <span className="text-primary dark:text-ice-dark">Your AI-Powered </span>
                 <span className="gradient-text">Hockey Analyst</span>
               </motion.h1>
 
@@ -171,16 +171,16 @@ export default function Home() {
                   disabled={isLoading}
                   whileHover={{ scale: 1.02, y: -2 }}
                   whileTap={{ scale: 0.98 }}
-                  className="w-full flex items-center gap-4 px-5 py-4 rounded-2xl bg-gradient-to-r from-primary/10 via-primary/5 to-transparent border border-primary/20 hover:border-primary/40 shadow-card hover:shadow-soft transition-all text-left group"
+                  className="w-full flex items-center gap-4 px-5 py-4 rounded-2xl bg-gradient-to-r from-primary/10 dark:from-ice/10 via-primary/5 dark:via-ice/5 to-transparent border border-primary/20 dark:border-ice/20 hover:border-primary/40 dark:hover:border-ice/40 shadow-card hover:shadow-soft transition-all text-left group"
                 >
-                  <div className="flex-shrink-0 w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center group-hover:bg-primary/20 transition-colors">
-                    <Newspaper className="w-5 h-5 text-primary" />
+                  <div className="flex-shrink-0 w-10 h-10 rounded-xl bg-primary/10 dark:bg-ice/10 flex items-center justify-center group-hover:bg-primary/20 dark:group-hover:bg-ice/20 transition-colors">
+                    <Newspaper className="w-5 h-5 text-primary dark:text-ice" />
                   </div>
                   <div>
                     <p className="font-semibold text-text-primary text-sm">Today's Daily Briefing</p>
                     <p className="text-xs text-text-muted mt-0.5">Injuries · Goalies · Top picks · Best bets</p>
                   </div>
-                  <span className="ml-auto text-primary opacity-0 group-hover:opacity-100 transition-opacity text-sm">→</span>
+                  <span className="ml-auto text-primary dark:text-ice opacity-0 group-hover:opacity-100 transition-opacity text-sm">→</span>
                 </motion.button>
               </motion.div>
 
@@ -208,7 +208,7 @@ export default function Home() {
                     title={feature.tooltip}
                     className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-surface border border-border shadow-card text-sm text-text-secondary hover:border-primary/30 hover:shadow-soft transition-all cursor-help"
                   >
-                    <feature.icon className="w-4 h-4 text-primary" />
+                    <feature.icon className="w-4 h-4 text-primary dark:text-ice" />
                     {feature.label}
                   </motion.span>
                 ))}
