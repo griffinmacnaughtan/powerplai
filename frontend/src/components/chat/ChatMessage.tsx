@@ -100,11 +100,11 @@ export function ChatMessage({ message, isLatest }: ChatMessageProps) {
               </div>
             )}
             {message.content && (
-              <p className="text-[15px] leading-relaxed">{message.content}</p>
+              <p className="text-sm leading-relaxed">{message.content}</p>
             )}
           </div>
         ) : (
-          <div className="prose text-[15px]">
+          <div className="prose prose-sm max-w-none">
             <ReactMarkdown>{message.content}</ReactMarkdown>
           </div>
         )}

@@ -136,14 +136,14 @@ export default function Home() {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0, y: -20 }}
-              className="flex-1 min-h-0 overflow-y-auto flex flex-col py-12"
+              className="flex-1 min-h-0 overflow-y-auto flex flex-col py-6"
             >
               <div className="my-auto w-full flex flex-col items-center">
               <motion.h1
                 initial={{ y: 20, opacity: 0 }}
                 animate={{ y: 0, opacity: 1 }}
                 transition={{ delay: 0.2 }}
-                className="text-4xl sm:text-5xl font-bold text-center mb-4"
+                className="text-3xl sm:text-4xl font-bold text-center mb-2"
               >
                 <span className="text-primary">Your AI-Powered </span>
                 <span className="gradient-text">Hockey Analyst</span>
@@ -153,7 +153,7 @@ export default function Home() {
                 initial={{ y: 20, opacity: 0 }}
                 animate={{ y: 0, opacity: 1 }}
                 transition={{ delay: 0.3 }}
-                className="text-text-secondary text-center max-w-lg mb-8 text-lg"
+                className="text-text-secondary text-center max-w-lg mb-5 text-sm"
               >
                 Ask questions about NHL stats, compare players, get fantasy advice,
                 and explore analytics. Powered by real data and AI.
@@ -164,7 +164,7 @@ export default function Home() {
                 initial={{ y: 20, opacity: 0 }}
                 animate={{ y: 0, opacity: 1 }}
                 transition={{ delay: 0.35 }}
-                className="w-full max-w-sm mb-8"
+                className="w-full max-w-sm mb-4"
               >
                 <motion.button
                   onClick={handleDailyBriefing}
@@ -192,7 +192,7 @@ export default function Home() {
                 initial={{ y: 20, opacity: 0 }}
                 animate={{ y: 0, opacity: 1 }}
                 transition={{ delay: 0.4 }}
-                className="flex flex-wrap items-center justify-center gap-3 mb-12"
+                className="flex flex-wrap items-center justify-center gap-2 mb-5 mt-4"
               >
                 {[
                   { icon: TrendingUp, label: 'Real-time Stats', tooltip: 'Live data from NHL API updated daily with game logs, standings, and player stats' },
@@ -221,7 +221,7 @@ export default function Home() {
                 transition={{ delay: 0.5 }}
                 className="w-full max-w-4xl"
               >
-                <p className="text-sm text-text-muted mb-4 text-center font-medium">
+                <p className="text-xs text-text-muted mb-3 text-center font-medium">
                   Try one of these to get started
                 </p>
                 <SuggestedQueries onSelect={sendMessage} />
@@ -232,7 +232,7 @@ export default function Home() {
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 transition={{ delay: 0.8 }}
-                className="mt-12 text-center"
+                className="mt-5 text-center"
               >
                 <p className="text-xs text-text-muted">
                   Powered by MoneyPuck, NHL API, and Claude AI
