@@ -103,9 +103,9 @@ export function ChatInput({ onSend, isLoading, placeholder = 'Ask about NHL stat
       className="relative"
     >
       {/* Subtle glow effect */}
-      <div className="absolute -inset-1 bg-gradient-to-r from-primary/10 via-ice/10 to-primary/10 rounded-2xl blur-xl opacity-50" />
+      <div className="absolute -inset-1 bg-gradient-to-r from-primary/10 via-ice/10 to-primary/10 dark:from-ice/8 dark:via-ice/5 dark:to-ice/8 rounded-2xl blur-xl opacity-50" />
 
-      <div className="relative bg-surface border-2 border-border hover:border-primary/30 focus-within:border-primary/50 rounded-2xl overflow-hidden shadow-soft transition-all duration-200">
+      <div className="relative bg-surface border-2 border-border hover:border-primary/30 dark:hover:border-ice/30 focus-within:border-primary/50 dark:focus-within:border-ice/50 rounded-2xl overflow-hidden shadow-soft dark:shadow-none transition-all duration-200">
 
         {/* Attachment previews */}
         <AnimatePresence initial={false}>
@@ -156,7 +156,7 @@ export function ChatInput({ onSend, isLoading, placeholder = 'Ask about NHL stat
 
         <div className="flex items-end gap-2 p-2">
           {/* AI indicator */}
-          <div className="flex-shrink-0 p-2 text-primary">
+          <div className="flex-shrink-0 p-2 text-primary dark:text-ice">
             <Zap className="w-5 h-5" />
           </div>
 
@@ -186,7 +186,7 @@ export function ChatInput({ onSend, isLoading, placeholder = 'Ask about NHL stat
             disabled={isLoading}
             className={clsx(
               'flex-shrink-0 p-2.5 rounded-xl transition-all duration-200',
-              'text-text-muted hover:text-primary hover:bg-primary/5',
+              'text-text-muted hover:text-primary hover:bg-primary/5 dark:hover:text-ice dark:hover:bg-ice/10',
               isLoading && 'opacity-40 pointer-events-none'
             )}
             whileHover={{ scale: 1.05 }}
@@ -215,7 +215,7 @@ export function ChatInput({ onSend, isLoading, placeholder = 'Ask about NHL stat
             className={clsx(
               'flex-shrink-0 p-3 rounded-xl transition-all duration-200',
               canSend
-                ? 'bg-primary text-white hover:bg-primary-light shadow-nhl'
+                ? 'bg-primary dark:bg-ice text-white dark:text-primary hover:bg-primary-light dark:hover:bg-ice-light shadow-nhl dark:shadow-[0_4px_14px_rgba(91,192,235,0.35)]'
                 : 'bg-surface-elevated text-text-muted border border-border'
             )}
             whileHover={canSend ? { scale: 1.05 } : undefined}

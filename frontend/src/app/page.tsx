@@ -49,15 +49,15 @@ export default function Home() {
   return (
     <div className="h-screen flex flex-col overflow-hidden">
       {/* Header */}
-      <header className="sticky top-0 z-50 glass border-b border-border">
+      <header className="sticky top-0 z-50 glass border-b border-border dark:border-border/60">
         <div className="max-w-5xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <button onClick={clearMessages} className="flex items-center gap-2.5 hover:opacity-80 transition-opacity">
               <Logo size="sm" link={false} />
               <LogoText className="text-lg" />
             </button>
-            <span className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-ice/20 text-ice-dark text-xs font-medium">
-              <span className="w-1.5 h-1.5 rounded-full bg-ice-dark animate-pulse" />
+            <span className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-ice/15 dark:bg-ice/10 border border-ice/20 dark:border-ice/15 text-ice-dark dark:text-ice text-xs font-semibold">
+              <span className="w-1.5 h-1.5 rounded-full bg-ice dark:bg-ice animate-pulse" />
               LIVE
             </span>
             <AccuracyBadge />
@@ -71,7 +71,7 @@ export default function Home() {
                 size="sm"
                 onClick={handleDailyBriefing}
                 disabled={isLoading}
-                className="border-primary/30 dark:border-ice/30 text-primary dark:text-ice hover:bg-primary/5 dark:hover:bg-ice/5 hover:border-primary/60 dark:hover:border-ice/60 font-medium"
+                className="border-primary/30 dark:border-ice/25 text-primary dark:text-ice hover:bg-primary/5 dark:hover:bg-ice/8 hover:border-primary/60 dark:hover:border-ice/50 font-medium dark:bg-ice/5"
                 title="Get today's injury alerts, goalies, top picks, and best bets"
               >
                 <Newspaper className="w-4 h-4" />
@@ -83,7 +83,7 @@ export default function Home() {
               variant="ghost"
               size="sm"
               onClick={toggle}
-              className="text-text-muted hover:text-text-primary"
+              className="text-text-muted hover:text-text-primary dark:hover:text-ice dark:hover:bg-ice/10"
               title={dark ? 'Switch to light mode' : 'Switch to dark mode'}
             >
               {dark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
@@ -108,7 +108,7 @@ export default function Home() {
               variant="secondary"
               size="sm"
               onClick={() => window.open('https://github.com/griffinmacnaughtan/powerplai', '_blank')}
-              className="border-border hover:border-primary hover:bg-primary/5"
+              className="border-border dark:border-border/70 hover:border-primary dark:hover:border-ice/40 hover:bg-primary/5 dark:hover:bg-ice/8 dark:text-text-secondary dark:hover:text-ice"
             >
               <Github className="w-4 h-4" />
               <span className="hidden sm:inline">GitHub</span>
@@ -117,7 +117,7 @@ export default function Home() {
               variant="secondary"
               size="sm"
               onClick={() => window.open('https://www.linkedin.com/in/griffin-macnaughtan/', '_blank')}
-              className="border-border hover:border-[#0A66C2] hover:bg-[#0A66C2]/5"
+              className="border-border dark:border-border/70 hover:border-[#0A66C2] hover:bg-[#0A66C2]/5 dark:text-text-secondary dark:hover:text-[#5aabee] dark:hover:border-[#5aabee]/40"
             >
               <Linkedin className="w-4 h-4" />
               <span className="hidden sm:inline">LinkedIn</span>
@@ -145,7 +145,7 @@ export default function Home() {
                 transition={{ delay: 0.2 }}
                 className="text-3xl sm:text-4xl font-bold text-center mb-2"
               >
-                <span className="text-primary dark:text-ice-dark">Your AI-Powered </span>
+                <span className="text-primary dark:text-ice">Your AI-Powered </span>
                 <span className="gradient-text">Hockey Analyst</span>
               </motion.h1>
 
@@ -171,16 +171,16 @@ export default function Home() {
                   disabled={isLoading}
                   whileHover={{ scale: 1.02, y: -2 }}
                   whileTap={{ scale: 0.98 }}
-                  className="w-full flex items-center gap-4 px-5 py-4 rounded-2xl bg-gradient-to-r from-primary/10 dark:from-ice/10 via-primary/5 dark:via-ice/5 to-transparent border border-primary/20 dark:border-ice/20 hover:border-primary/40 dark:hover:border-ice/40 shadow-card hover:shadow-soft transition-all text-left group"
+                  className="w-full flex items-center gap-4 px-5 py-4 rounded-2xl bg-gradient-to-r from-primary/10 dark:from-ice/[0.08] via-primary/5 dark:via-ice/[0.04] to-transparent border border-primary/20 dark:border-ice/20 hover:border-primary/40 dark:hover:border-ice/40 shadow-card dark:shadow-none hover:shadow-soft dark:hover:shadow-[0_4px_20px_-4px_rgba(91,192,235,0.15)] transition-all text-left group"
                 >
-                  <div className="flex-shrink-0 w-10 h-10 rounded-xl bg-primary/10 dark:bg-ice/10 flex items-center justify-center group-hover:bg-primary/20 dark:group-hover:bg-ice/20 transition-colors">
+                  <div className="flex-shrink-0 w-10 h-10 rounded-xl bg-primary/10 dark:bg-ice/10 flex items-center justify-center group-hover:bg-primary/20 dark:group-hover:bg-ice/15 transition-colors">
                     <Newspaper className="w-5 h-5 text-primary dark:text-ice" />
                   </div>
                   <div>
                     <p className="font-semibold text-text-primary text-sm">Today's Daily Briefing</p>
                     <p className="text-xs text-text-muted mt-0.5">Injuries · Goalies · Top picks · Best bets</p>
                   </div>
-                  <span className="ml-auto text-primary dark:text-ice opacity-0 group-hover:opacity-100 transition-opacity text-sm">→</span>
+                  <span className="ml-auto text-primary dark:text-ice opacity-0 group-hover:opacity-100 transition-opacity text-sm font-semibold">→</span>
                 </motion.button>
               </motion.div>
 
@@ -206,7 +206,7 @@ export default function Home() {
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ delay: 0.4 + i * 0.1 }}
                     title={feature.tooltip}
-                    className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-surface border border-border shadow-card text-sm text-text-secondary hover:border-primary/30 hover:shadow-soft transition-all cursor-help"
+                    className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-surface dark:bg-surface/80 border border-border dark:border-border/70 shadow-card dark:shadow-none text-sm text-text-secondary dark:text-text-secondary hover:border-primary/30 dark:hover:border-ice/30 dark:hover:text-ice hover:shadow-soft transition-all cursor-help"
                   >
                     <feature.icon className="w-4 h-4 text-primary dark:text-ice" />
                     {feature.label}

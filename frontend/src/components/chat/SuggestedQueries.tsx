@@ -62,7 +62,7 @@ export function SuggestedQueries({ onSelect }: SuggestedQueriesProps) {
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.1 + i * 0.1 }}
           onClick={() => onSelect(suggestion.query)}
-          className="group flex items-center gap-3 p-4 rounded-xl bg-surface border border-border hover:border-primary/40 dark:hover:border-ice/30 hover:shadow-soft transition-all duration-300 text-left card-hover"
+          className="group flex items-center gap-3 p-4 rounded-xl bg-surface dark:bg-surface/80 border border-border dark:border-border/60 hover:border-primary/40 dark:hover:border-ice/35 hover:shadow-soft dark:hover:shadow-[0_4px_20px_-4px_rgba(91,192,235,0.12)] transition-all duration-300 text-left card-hover"
         >
           <div className={`flex-shrink-0 w-11 h-11 rounded-lg ${suggestion.bgColor} flex items-center justify-center group-hover:scale-105 transition-transform`}>
             <suggestion.icon className={`w-5 h-5 ${suggestion.color}`} />
