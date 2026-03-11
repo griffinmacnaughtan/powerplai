@@ -1,7 +1,7 @@
 'use client'
 
 import { motion } from 'framer-motion'
-import { Target, DollarSign, TrendingUp, Flame, Scale, Trophy } from 'lucide-react'
+import { Target, DollarSign, TrendingDown, Flame, Activity, Trophy } from 'lucide-react'
 
 interface SuggestedQueriesProps {
   onSelect: (query: string) => void
@@ -10,45 +10,45 @@ interface SuggestedQueriesProps {
 const suggestions = [
   {
     icon: Flame,
-    query: 'Who will score tonight? Give me your top 3 picks with explanations',
-    label: 'Tonight\'s Scorers',
+    query: "Give me tonight's top 5 scoring picks with market odds — where does the model see the biggest edge?",
+    label: "Top Picks + Odds",
     color: 'text-accent',
     bgColor: 'bg-accent-muted',
   },
   {
     icon: DollarSign,
-    query: 'Who are the best value players in the league right now?',
-    label: 'Best Value',
+    query: "What are the best betting edges tonight? Grade them and explain why.",
+    label: 'Best Bets Tonight',
     color: 'text-green-600',
     bgColor: 'bg-green-50',
   },
   {
-    icon: Scale,
-    query: 'Will the Oilers vs Leafs game go over or under 6.5 goals?',
-    label: 'Over/Under',
-    color: 'text-primary',
-    bgColor: 'bg-primary-50',
+    icon: TrendingDown,
+    query: "Which star players are way overdue for a regression? Their goals are way ahead of their xG.",
+    label: 'Bust Risk',
+    color: 'text-amber-600',
+    bgColor: 'bg-amber-50',
   },
   {
     icon: Target,
-    query: 'Who leads the league in expected goals this season?',
-    label: 'xG Leaders',
+    query: 'Who are the top 10 players in expected goals this season and how do they compare to their actual goal totals?',
+    label: 'xG vs Actual Goals',
     color: 'text-ice-dark',
     bgColor: 'bg-ice/10',
   },
   {
-    icon: TrendingUp,
-    query: 'Who is better value, Connor Bedard or Macklin Celebrini?',
-    label: 'Value Compare',
+    icon: Activity,
+    query: 'Who are the five hottest forwards in the league right now based on the last 10 games?',
+    label: 'Hottest Players',
     color: 'text-purple-600',
     bgColor: 'bg-purple-50',
   },
   {
     icon: Trophy,
-    query: 'Which players are outperforming their expected goals?',
-    label: 'Overperformers',
-    color: 'text-amber-600',
-    bgColor: 'bg-amber-50',
+    query: 'I need goals in my fantasy lineup — which available forwards have the best goal-scoring probability this week?',
+    label: 'Fantasy: Need Goals',
+    color: 'text-primary',
+    bgColor: 'bg-primary-50',
   },
 ]
 
