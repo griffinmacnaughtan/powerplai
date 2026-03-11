@@ -4,6 +4,7 @@ import { motion } from 'framer-motion'
 import { User, Bot } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import clsx from 'clsx'
+import { FeedbackButtons } from '@/components/chat/FeedbackButtons'
 
 export interface AttachedFile {
   id: string
@@ -126,11 +127,20 @@ export function ChatMessage({ message, isLatest }: ChatMessageProps) {
                   {source.data === 'league_leaders' ? 'Stats Database' :
                    source.data === 'team_stats' ? 'Team Stats' :
                    source.data === 'all_teams_breakdown' ? 'All Teams' :
+                   source.data === 'daily_briefing' ? 'Daily Briefing' :
                    source.type.toUpperCase()}
                 </span>
               ))}
             </div>
           </motion.div>
+        )}
+
+        {/* Feedback buttons — only on assistant messages */}
+        {!isUser && (
+          <FeedbackButtons
+            queryType={message.queryType}
+            responsePreview={message.content}
+          />
         )}
       </div>
 
