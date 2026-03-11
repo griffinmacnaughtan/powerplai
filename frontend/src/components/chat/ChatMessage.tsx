@@ -5,6 +5,14 @@ import { User, Bot } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import clsx from 'clsx'
 
+export interface AttachedFile {
+  id: string
+  name: string
+  type: string    // MIME type
+  dataUrl: string // full data-URI for display
+  size: number
+}
+
 export interface Message {
   id: string
   role: 'user' | 'assistant'
@@ -12,6 +20,7 @@ export interface Message {
   sources?: Array<{ type: string; data: string }>
   queryType?: string
   timestamp: Date
+  attachments?: AttachedFile[]
 }
 
 interface ChatMessageProps {
@@ -65,7 +74,34 @@ export function ChatMessage({ message, isLatest }: ChatMessageProps) {
         )}
       >
         {isUser ? (
-          <p className="text-[15px] leading-relaxed">{message.content}</p>
+          <div>
+            {/* Attached images */}
+            {message.attachments && message.attachments.length > 0 && (
+              <div className="flex flex-wrap gap-2 mb-2">
+                {message.attachments.map((file) =>
+                  file.type.startsWith('image/') ? (
+                    <img
+                      key={file.id}
+                      src={file.dataUrl}
+                      alt={file.name}
+                      className="max-h-40 max-w-[200px] rounded-lg object-cover border border-white/20"
+                    />
+                  ) : (
+                    <div
+                      key={file.id}
+                      className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white/10 text-xs text-white/80"
+                    >
+                      <span>📎</span>
+                      <span className="max-w-[120px] truncate">{file.name}</span>
+                    </div>
+                  )
+                )}
+              </div>
+            )}
+            {message.content && (
+              <p className="text-[15px] leading-relaxed">{message.content}</p>
+            )}
+          </div>
         ) : (
           <div className="prose text-[15px]">
             <ReactMarkdown>{message.content}</ReactMarkdown>

@@ -115,7 +115,7 @@ class MatchupPrediction:
     home_players: list[PlayerPrediction]
     away_players: list[PlayerPrediction]
 
-    top_scorers: list[PlayerPrediction]  # Top 5 most likely scorers
+    top_scorers: list[PlayerPrediction]  # Top 15 most likely scorers
 
     # Enhanced matchup context
     expected_total_goals: float | None = None
@@ -232,7 +232,7 @@ class PredictionEngine:
 
         # Combine and rank by goal probability
         all_players = home_players + away_players
-        top_scorers = sorted(all_players, key=lambda p: p.prob_goal, reverse=True)[:5]
+        top_scorers = sorted(all_players, key=lambda p: p.prob_goal, reverse=True)[:15]
 
         # Determine pace rating
         expected_total = matchup_context.get("expected_total_goals", 6.0)

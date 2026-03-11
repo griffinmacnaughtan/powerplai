@@ -155,10 +155,18 @@ class ChatMessage(BaseModel):
     content: str
 
 
+class ImageAttachment(BaseModel):
+    """A base64-encoded image attachment from the user."""
+    data: str          # base64-encoded image data (no data-URI prefix)
+    media_type: str    # e.g. "image/png", "image/jpeg", "image/gif", "image/webp"
+    name: str = ""     # original filename (optional, for display only)
+
+
 class QueryRequest(BaseModel):
     query: str
     include_rag: bool = True
-    messages: list[ChatMessage] = []  # Conversation history for context
+    messages: list[ChatMessage] = []    # Conversation history for context
+    images: list[ImageAttachment] = []  # Optional image attachments (Claude vision)
 
 
 class QueryResponse(BaseModel):
@@ -223,11 +231,15 @@ async def query_copilot(
     try:
         # Convert chat messages to dict format for copilot
         history = [{"role": m.role, "content": m.content} for m in query_request.messages]
+        # Convert image attachments to dict format
+        images = [{"data": img.data, "media_type": img.media_type, "name": img.name}
+                  for img in query_request.images]
         result = await copilot.query(
             query_request.query,
             db,
             include_rag=query_request.include_rag,
             conversation_history=history,
+            images=images,
         )
         return QueryResponse(**result)
     except Exception as e:
