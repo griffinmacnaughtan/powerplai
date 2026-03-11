@@ -273,6 +273,14 @@ class PowerplAICopilot:
                 context_parts.append(f"## Olympic Hockey - Milano Cortina 2026\n{olympics_context}")
                 sources.append({"type": "olympics", "data": "milano_cortina_2026"})
 
+        # Check if this is a recent results query (yesterday, last night, past games)
+        elif classification.get("is_recent_results_query") or classification.get("type") == "recent_results":
+            days_offset = classification.get("days_offset", 1)
+            results_context = await self._fetch_recent_results(db, days_offset)
+            if results_context:
+                context_parts.append(f"## Recent Game Results\n{results_context}")
+                sources.append({"type": "schedule", "data": "recent_results"})
+
         # Check if this is a schedule query (what games are today)
         elif classification.get("is_schedule_query") or classification.get("type") == "schedule":
             schedule_context = await self._fetch_todays_schedule(db, classification)
@@ -404,6 +412,8 @@ Respond with JSON only:
     "is_regression_query": true if asking about regression, xG regression, due for goals, underperforming, overperforming, or shooting luck,
     "is_olympics_query": true if asking about Olympics, Olympic hockey, Team Canada/USA/Sweden, Milano Cortina 2026, or Olympic standings/stats,
     "is_schedule_query": true if asking about games today, tonight, what's playing, schedule, matchups,
+    "is_recent_results_query": true if asking about past/completed games, who played yesterday, last night's games, recent results, scores, or what happened in a game,
+    "days_offset": integer days back from today (0=today, 1=yesterday, 2=two days ago, etc.) — set when the query has a relative time reference,
     "is_briefing_query": true if asking for a daily briefing, morning digest, lineup summary, or today's overview,
     "is_parlay_query": true if asking about today's parlays, model picks, parlay tracker, parlay record, or how parlays are performing,
     "top_n": number if asking for top N players OR a specific rank (e.g. "top 3" = 3, "top 5" = 5, "23rd best" = 23, "10th" = 10, "who is ranked 15" = 15),
@@ -453,6 +463,13 @@ Examples:
 - "Any games on right now?" -> type: "schedule", is_schedule_query: true
 - "What's the schedule for today?" -> type: "schedule", is_schedule_query: true
 - "Which teams play tonight?" -> type: "schedule", is_schedule_query: true
+- "Who played yesterday?" -> type: "recent_results", is_recent_results_query: true, days_offset: 1
+- "What happened last night?" -> type: "recent_results", is_recent_results_query: true, days_offset: 1
+- "Last night's scores" -> type: "recent_results", is_recent_results_query: true, days_offset: 1
+- "What were the results yesterday?" -> type: "recent_results", is_recent_results_query: true, days_offset: 1
+- "Who scored two nights ago?" -> type: "recent_results", is_recent_results_query: true, days_offset: 2
+- "Games from March 9th?" -> type: "recent_results", is_recent_results_query: true, days_offset: 2
+- "Recap Monday's games" -> type: "recent_results", is_recent_results_query: true, days_offset: 1
 - "Daily briefing" -> type: "daily_briefing", is_briefing_query: true
 - "Give me today's briefing" -> type: "daily_briefing", is_briefing_query: true
 - "Morning digest" -> type: "daily_briefing", is_briefing_query: true
@@ -2310,6 +2327,85 @@ Examples:
 
         sections.append("\n---\n_Data from NHL API, ESPN, and MoneyPuck. Refreshed at startup._")
         return "\n".join(sections)
+
+    async def _fetch_recent_results(
+        self,
+        db: AsyncSession,
+        days_offset: int = 1,
+    ) -> str | None:
+        """
+        Fetch completed game results and box score leaders for a past date.
+        days_offset=1 → yesterday, 2 → two days ago, etc.
+        """
+        from datetime import date, timedelta
+        from sqlalchemy import text
+
+        target_date = date.today() - timedelta(days=days_offset)
+        date_label = "Yesterday" if days_offset == 1 else target_date.strftime("%A, %B %d")
+
+        try:
+            # Get completed games for that date
+            games_result = await db.execute(
+                text("""
+                    SELECT home_team_abbrev, away_team_abbrev,
+                           home_score, away_score, game_state
+                    FROM games
+                    WHERE game_date = :d
+                    ORDER BY start_time_utc
+                """),
+                {"d": target_date},
+            )
+            games = games_result.fetchall()
+
+            if not games:
+                return f"No games found for {target_date.strftime('%B %d, %Y')}. Data may not have been ingested yet for that date."
+
+            lines = [f"**{date_label}'s Games — {target_date.strftime('%B %d, %Y')}**\n"]
+
+            for g in games:
+                if g.home_score is not None and g.away_score is not None:
+                    winner = g.home_team_abbrev if g.home_score > g.away_score else g.away_team_abbrev
+                    lines.append(
+                        f"**{g.away_team_abbrev} {g.away_score} @ {g.home_team_abbrev} {g.home_score}** "
+                        f"— {winner} win"
+                    )
+                else:
+                    lines.append(f"{g.away_team_abbrev} @ {g.home_team_abbrev} — {g.game_state}")
+
+            # Top scorers from box scores
+            scorers_result = await db.execute(
+                text("""
+                    SELECT p.name, gl.team_abbrev, gl.goals, gl.assists, gl.points, gl.shots
+                    FROM game_logs gl
+                    JOIN players p ON p.id = gl.player_id
+                    WHERE gl.game_date = :d AND gl.points > 0
+                    ORDER BY gl.points DESC, gl.goals DESC
+                    LIMIT 15
+                """),
+                {"d": target_date},
+            )
+            scorers = scorers_result.fetchall()
+
+            if scorers:
+                lines.append("\n**Top Performers:**")
+                for s in scorers:
+                    stat_line = []
+                    if s.goals:
+                        stat_line.append(f"{s.goals}G")
+                    if s.assists:
+                        stat_line.append(f"{s.assists}A")
+                    stat_line.append(f"{s.points}P")
+                    if s.shots:
+                        stat_line.append(f"{s.shots} SOG")
+                    lines.append(f"- {s.name} ({s.team_abbrev}): {', '.join(stat_line)}")
+            else:
+                lines.append("\n*Box score data not yet ingested for this date. Check back after next startup.*")
+
+            return "\n".join(lines)
+
+        except Exception as e:
+            logger.warning("recent_results_fetch_failed", days_offset=days_offset, error=str(e))
+            return None
 
     async def _fetch_todays_schedule(
         self,

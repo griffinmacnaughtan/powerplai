@@ -466,6 +466,7 @@ async def run_startup_updates() -> dict:
     Returns summary of all updates performed.
     """
     results = {
+        "recent_games": None,
         "schedule": None,
         "moneypuck": None,
         "game_logs": None,
@@ -563,7 +564,17 @@ async def run_startup_updates() -> dict:
             results["errors"].append(f"moneypuck: {str(e)}")
             await db.rollback()
 
-        # 1. Refresh today's schedule
+        # 1. Backfill recent games (schedule + box scores for last 7 days)
+        # This must run before individual log catch-up so game rows exist
+        try:
+            from backend.src.ingestion.games import ingest_recent_games
+            results["recent_games"] = await ingest_recent_games(db, days_back=7)
+        except Exception as e:
+            logger.error("recent_games_failed", error=str(e))
+            results["errors"].append(f"recent_games: {str(e)}")
+            await db.rollback()
+
+        # 2. Refresh today's schedule (ensure today's games are up to date)
         try:
             results["schedule"] = await refresh_todays_schedule(db)
         except Exception as e:
@@ -571,7 +582,7 @@ async def run_startup_updates() -> dict:
             results["errors"].append(f"schedule: {str(e)}")
             await db.rollback()
 
-        # 2. Catch up on game logs
+        # 3. Catch up on per-player season game logs (rolling recent form)
         try:
             results["game_logs"] = await catchup_game_logs(db, season)
         except Exception as e:

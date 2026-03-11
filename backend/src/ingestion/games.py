@@ -356,6 +356,202 @@ async def ingest_all_player_game_logs(
         await client.close()
 
 
+async def ingest_game_boxscore(
+    db: AsyncSession,
+    game_id: int,
+    home_team: str,
+    away_team: str,
+    game_date: date,
+    season: str,
+    client: NHLAPIClient,
+) -> int:
+    """
+    Fetch boxscore for a completed game and upsert player game logs.
+    Returns number of player log rows upserted.
+    """
+    try:
+        data = await client.get_game_boxscore(game_id)
+    except Exception as e:
+        logger.warning("boxscore_fetch_failed", game_id=game_id, error=str(e))
+        return 0
+
+    player_by_game = data.get("playerByGameStats", {})
+    rows_upserted = 0
+
+    for side, team_abbrev in [("awayTeam", away_team), ("homeTeam", home_team)]:
+        opponent = home_team if side == "awayTeam" else away_team
+        home_away = "away" if side == "awayTeam" else "home"
+        side_data = player_by_game.get(side, {})
+
+        skaters = (
+            side_data.get("forwards", [])
+            + side_data.get("defense", [])
+        )
+
+        for p in skaters:
+            nhl_player_id = p.get("playerId")
+            if not nhl_player_id:
+                continue
+
+            # Ensure player row exists
+            await db.execute(
+                text("""
+                    INSERT INTO players (nhl_id, name, team_abbrev, created_at, updated_at)
+                    VALUES (:nhl_id, :name, :team, NOW(), NOW())
+                    ON CONFLICT (nhl_id) DO NOTHING
+                """),
+                {
+                    "nhl_id": nhl_player_id,
+                    "name": (p.get("name") or {}).get("default", f"Player {nhl_player_id}"),
+                    "team": team_abbrev,
+                },
+            )
+            player_row = (await db.execute(
+                text("SELECT id FROM players WHERE nhl_id = :nhl_id"),
+                {"nhl_id": nhl_player_id},
+            )).fetchone()
+            if not player_row:
+                continue
+
+            goals = p.get("goals", 0) or 0
+            assists = p.get("assists", 0) or 0
+            toi_str = p.get("toi", "0:00") or "0:00"
+
+            await db.execute(
+                text("""
+                    INSERT INTO game_logs (
+                        player_id, game_id, game_date, season,
+                        team_abbrev, opponent, home_away,
+                        goals, assists, points, shots, toi,
+                        plus_minus, pim,
+                        powerplay_goals, powerplay_points,
+                        shorthanded_goals, shorthanded_points,
+                        game_winning_goals, overtime_goals, shifts,
+                        created_at
+                    ) VALUES (
+                        :player_id, :game_id, :game_date, :season,
+                        :team, :opponent, :home_away,
+                        :goals, :assists, :points, :shots, :toi,
+                        :plus_minus, :pim,
+                        :ppg, :ppp,
+                        :shg, :shp,
+                        :gwg, :otg, :shifts,
+                        NOW()
+                    )
+                    ON CONFLICT (player_id, game_id) DO UPDATE SET
+                        goals = EXCLUDED.goals,
+                        assists = EXCLUDED.assists,
+                        points = EXCLUDED.points,
+                        shots = EXCLUDED.shots,
+                        toi = EXCLUDED.toi
+                """),
+                {
+                    "player_id": player_row[0],
+                    "game_id": game_id,
+                    "game_date": game_date,
+                    "season": season,
+                    "team": team_abbrev,
+                    "opponent": opponent,
+                    "home_away": home_away,
+                    "goals": goals,
+                    "assists": assists,
+                    "points": goals + assists,
+                    "shots": p.get("shots", p.get("sog", 0)) or 0,
+                    "toi": _parse_toi(toi_str),
+                    "plus_minus": p.get("plusMinus", 0) or 0,
+                    "pim": p.get("pim", 0) or 0,
+                    "ppg": p.get("powerPlayGoals", 0) or 0,
+                    "ppp": p.get("powerPlayPoints", 0) or 0,
+                    "shg": p.get("shorthandedGoals", 0) or 0,
+                    "shp": p.get("shorthandedPoints", 0) or 0,
+                    "gwg": p.get("gameWinningGoals", 0) or 0,
+                    "otg": p.get("otGoals", 0) or 0,
+                    "shifts": p.get("shifts"),
+                },
+            )
+            rows_upserted += 1
+
+    if rows_upserted:
+        await db.commit()
+    logger.info("boxscore_ingested", game_id=game_id, players=rows_upserted)
+    return rows_upserted
+
+
+async def ingest_recent_games(
+    db: AsyncSession,
+    days_back: int = 7,
+) -> dict:
+    """
+    Backfill schedule rows and player box scores for the last N days.
+
+    On every startup this ensures:
+    - games table has all recent completed games with final scores
+    - game_logs table has player box scores for those games (for parlay grading,
+      "who played yesterday", recent form analysis, etc.)
+    """
+    from backend.src.ingestion.scheduler import get_current_season
+    season_year = int(get_current_season())
+    season = f"{season_year}{season_year + 1}"
+
+    client = NHLAPIClient()
+    results = {"schedule_games": 0, "boxscores_ingested": 0, "errors": []}
+
+    try:
+        today = date.today()
+        start = today - timedelta(days=days_back)
+
+        # 1. Ingest schedules for the window (also updates final scores)
+        current = start
+        while current <= today:
+            try:
+                n = await ingest_schedule_for_date(db, current, client)
+                results["schedule_games"] += n
+            except Exception as e:
+                results["errors"].append(f"schedule {current}: {str(e)}")
+            # NHL schedule API returns a week at a time — step by 7 days
+            current += timedelta(days=7)
+
+        # 2. Find completed games in the window with no box scores yet
+        missing = await db.execute(
+            text("""
+                SELECT g.nhl_game_id, g.home_team_abbrev, g.away_team_abbrev,
+                       g.game_date, g.game_state
+                FROM games g
+                WHERE g.game_date BETWEEN :start AND :yesterday
+                  AND g.game_state IN ('FINAL', 'OFF')
+                  AND NOT EXISTS (
+                      SELECT 1 FROM game_logs gl WHERE gl.game_id = g.nhl_game_id
+                  )
+                ORDER BY g.game_date DESC
+            """),
+            {"start": start, "yesterday": today - timedelta(days=1)},
+        )
+        games_needing_boxscores = missing.fetchall()
+        logger.info("boxscores_needed", count=len(games_needing_boxscores))
+
+        for row in games_needing_boxscores:
+            try:
+                n = await ingest_game_boxscore(
+                    db,
+                    game_id=row.nhl_game_id,
+                    home_team=row.home_team_abbrev,
+                    away_team=row.away_team_abbrev,
+                    game_date=row.game_date,
+                    season=season,
+                    client=client,
+                )
+                results["boxscores_ingested"] += n
+                await asyncio.sleep(0.2)  # be polite to the API
+            except Exception as e:
+                results["errors"].append(f"boxscore {row.nhl_game_id}: {str(e)}")
+
+    finally:
+        await client.close()
+
+    logger.info("recent_games_ingested", **results)
+    return results
+
+
 async def get_todays_games(db: AsyncSession) -> list[dict]:
     """Get today's scheduled games."""
     today = date.today()

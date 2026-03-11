@@ -101,9 +101,11 @@ async def generate_daily_parlays(
     # Pull today's games
     games_result = await db.execute(
         text("""
-            SELECT home_team, away_team FROM games
-            WHERE game_date = :d AND is_completed = FALSE
-            ORDER BY game_date
+            SELECT home_team_abbrev AS home_team, away_team_abbrev AS away_team
+            FROM games
+            WHERE game_date = :d
+              AND game_state NOT IN ('OFF', 'FINAL', 'CRIT')
+            ORDER BY start_time_utc
         """),
         {"d": target_date},
     )
@@ -159,11 +161,10 @@ async def generate_daily_parlays(
     home_prob = sum(p["prob_goal"] for p in all_preds if p["team"] == ml_game.home_team)
     away_prob = sum(p["prob_goal"] for p in all_preds if p["team"] == ml_game.away_team)
     ml_team = ml_game.home_team if home_prob >= away_prob else ml_game.away_team
+    ml_opponent = ml_game.away_team if ml_team == ml_game.home_team else ml_game.home_team
     ml_prob = max(home_prob, away_prob) / (home_prob + away_prob) if (home_prob + away_prob) > 0 else 0.52
     ml_prob = min(max(ml_prob, 0.45), 0.65)  # cap reasonable range
-    best_legs.append(ParlayLeg("moneyline", None, ml_team,
-                                ml_game.away_team if ml_team == ml_game.home_team else ml_game.home_team,
-                                round(ml_prob, 3)))
+    best_legs.append(ParlayLeg("moneyline", None, ml_team, ml_opponent, round(ml_prob, 3)))
 
     combined = 1.0
     for leg in best_legs:
@@ -279,7 +280,8 @@ async def validate_parlays(
     # Fetch game results for moneyline validation
     game_results = await db.execute(
         text("""
-            SELECT home_team, away_team, home_score, away_score
+            SELECT home_team_abbrev AS home_team, away_team_abbrev AS away_team,
+                   home_score, away_score
             FROM games
             WHERE game_date = :d AND is_completed = TRUE AND home_score IS NOT NULL
         """),
