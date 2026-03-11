@@ -1391,7 +1391,13 @@ Examples:
                     best_odds_by_player[key] = line
 
         has_live_odds = bool(live_odds)
-        odds_label = f"Live odds ({remaining} API calls remaining)" if has_live_odds else "No live odds available — model estimates only"
+        from backend.src.agents.odds_value import ODDS_API_KEY as _ODDS_KEY
+        if has_live_odds:
+            odds_label = f"Live sportsbook odds ({remaining} API calls remaining)"
+        elif _ODDS_KEY:
+            odds_label = "Odds API key set but no player prop lines returned. Key may require player_props tier at the-odds-api.com. Showing model-estimated fair odds."
+        else:
+            odds_label = "No Odds API key configured. Showing model-estimated fair odds only."
 
         lines = []
         lines.append(f"**Tonight's Betting Edges** ({report.game_count} games, {report.edges_found} opportunities)\n")

@@ -174,13 +174,19 @@ class OddsValueCalculator:
         params = {
             "apiKey": self.api_key,
             "regions": "us",
-            "markets": "player_points,player_goals",  # Player props
+            "markets": "player_goal_scorer,player_points_over_under",
             "oddsFormat": "american",
         }
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.get(url, params=params)
+
+                if response.status_code == 422:
+                    # Player props not available on current API tier
+                    logger.warning("odds_api_player_props_unavailable", tier_msg="Upgrade to player props tier")
+                    return {}, None
+
                 response.raise_for_status()
 
                 data = response.json()
@@ -195,7 +201,7 @@ class OddsValueCalculator:
                 return self._parse_odds_response(data), int(remaining) if remaining else None
 
         except httpx.HTTPStatusError as e:
-            logger.warning("odds_api_error", status=e.response.status_code)
+            logger.warning("odds_api_error", status=e.response.status_code, body=e.response.text[:200])
             return {}, None
         except Exception as e:
             logger.warning("odds_api_failed", error=str(e))
