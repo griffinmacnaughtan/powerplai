@@ -418,7 +418,7 @@ class EdgeFinder:
         row = result.fetchone()
 
         if row and row.goals is not None and row.xg is not None:
-            return row.goals - row.xg
+            return float(row.goals) - float(row.xg)
         return 0.0
 
     def _calculate_grade(self, score: float) -> str:
