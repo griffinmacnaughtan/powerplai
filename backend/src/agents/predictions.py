@@ -157,7 +157,7 @@ class PredictionEngine:
                 SELECT home_team_abbrev, away_team_abbrev, start_time_utc
                 FROM games
                 WHERE game_date = :today
-                  AND game_state = 'FUT'
+                  AND game_state NOT IN ('OFF', 'FINAL', 'CRIT')
                 ORDER BY start_time_utc
             """),
             {"today": today}
