@@ -13,9 +13,8 @@ export function AccuracyBadge() {
 
   useEffect(() => {
     api.getAccuracySummary(7).then(res => {
-      const nhl = res?.by_type?.nhl ?? res?.nhl ?? null
-      if (nhl && nhl.validated >= 10) {
-        setData({ nhl })
+      if (res?.nhl && res.nhl.validated >= 10) {
+        setData(res as AccuracySummary)
       }
     }).catch(() => {})
   }, [])
