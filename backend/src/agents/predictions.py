@@ -644,10 +644,10 @@ class PredictionEngine:
 
         return {
             "games": games,
-            "ppg": points / games if games > 0 else 0,
-            "gpg": goals / games if games > 0 else 0,
+            "ppg": float(points) / games if games > 0 else 0.0,
+            "gpg": float(goals) / games if games > 0 else 0.0,
             "avg_shots": float(row.avg_shots) if row.avg_shots else 2.5,
-            "goal_ratio": goals / points if points > 0 else 0.4,
+            "goal_ratio": float(goals) / float(points) if points > 0 else 0.4,
         }
 
     async def _get_season_stats(self, db: AsyncSession, player_id: int) -> dict:
@@ -669,9 +669,9 @@ class PredictionEngine:
 
         return {
             "games": row.games_played,
-            "ppg": row.points / row.games_played if row.games_played > 0 else 0,
-            "gpg": row.goals / row.games_played if row.games_played > 0 else 0,
-            "xg_per_game": float(row.xg) / row.games_played if row.xg and row.games_played > 0 else 0,
+            "ppg": float(row.points) / row.games_played if row.games_played > 0 else 0.0,
+            "gpg": float(row.goals) / row.games_played if row.games_played > 0 else 0.0,
+            "xg_per_game": float(row.xg) / row.games_played if row.xg and row.games_played > 0 else 0.0,
         }
 
     async def _get_h2h_stats(
@@ -700,8 +700,8 @@ class PredictionEngine:
 
         return {
             "games": row.games,
-            "ppg": row.points / row.games if row.games > 0 else 0,
-            "gpg": row.goals / row.games if row.games > 0 else 0,
+            "ppg": float(row.points) / row.games if row.games > 0 else 0.0,
+            "gpg": float(row.goals) / row.games if row.games > 0 else 0.0,
         }
 
     async def _get_home_away_stats(
@@ -730,9 +730,9 @@ class PredictionEngine:
 
         for row in rows:
             if row.home_away == "home" and row.games > 0:
-                home_ppg = row.points / row.games
+                home_ppg = float(row.points) / row.games
             elif row.home_away == "away" and row.games > 0:
-                away_ppg = row.points / row.games
+                away_ppg = float(row.points) / row.games
 
         # Calculate adjustment relative to average
         avg_ppg = (home_ppg + away_ppg) / 2 if (home_ppg + away_ppg) > 0 else 0

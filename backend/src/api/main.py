@@ -92,6 +92,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("feedback_table_create_failed", error=str(e))
 
+    # Create prediction_audit table if it doesn't exist
+    try:
+        async with async_session_maker() as db:
+            from backend.src.agents.prediction_audit import create_audit_table
+            await create_audit_table(db)
+    except Exception as e:
+        logger.warning("audit_table_init_failed", error=str(e))
+
     # Run startup updates in background (don't block startup)
     # This includes: schedule refresh, game log catch-up, injuries, team/goalie stats
     if settings.auto_update_enabled:
