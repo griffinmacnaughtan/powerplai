@@ -1000,7 +1000,7 @@ Examples:
                             if mkt:
                                 mkt_pct = int(mkt * 100)
                                 edge = prob_pct - mkt_pct
-                                edge_str = f" 🔥 +{edge}% edge" if edge >= 5 else (f" ⚠️ {edge}% edge" if edge < -5 else "")
+                                edge_str = f" (+{edge}% edge)" if edge >= 5 else (f" ({edge}% edge)" if edge < -5 else "")
                                 line += f" | Market: {mkt_pct}%{edge_str}"
                             predictions_text.append(line)
                             if pred.factors:
@@ -1030,8 +1030,8 @@ Examples:
                         if mkt:
                             mkt_pct = int(mkt * 100)
                             edge = prob_pct - mkt_pct
-                            edge_str = f" 🔥 **Edge: +{edge}%**" if edge >= 5 else (
-                                f" ⚠️ Edge: {edge}%" if edge < -5 else f" Edge: {edge:+d}%"
+                            edge_str = f" **Edge: +{edge}%**" if edge >= 5 else (
+                                f" Edge: {edge}%" if edge < -5 else f" Edge: {edge:+d}%"
                             )
                             line += f" | Market: {mkt_pct}%{edge_str}"
                         predictions_text.append(line)
@@ -1222,7 +1222,7 @@ Examples:
         lines = []
 
         # Disclaimer
-        lines.append("*⚠️ Salary data as of Feb 2025. Contract values may have changed due to trades, extensions, or new signings.*\n")
+        lines.append("*Note: Salary data as of Feb 2025. Contract values may have changed due to trades, extensions, or new signings.*\n")
 
         if players:
             # Compare specific players
@@ -1725,7 +1725,7 @@ Examples:
         lines.append(f"**xG Regression Report** (Analyzed {report.total_analyzed} players)\n")
 
         if report.positive_regression:
-            lines.append("**🎯 POSITIVE REGRESSION CANDIDATES** (Due for MORE goals - BET ON)\n")
+            lines.append("**POSITIVE REGRESSION CANDIDATES** (Due for more goals)\n")
             lines.append("| Player | Team | Goals | xG | Diff | Recommendation |")
             lines.append("|--------|------|-------|-----|------|----------------|")
             for c in report.positive_regression[:7]:
@@ -1735,7 +1735,7 @@ Examples:
                 )
 
         if report.negative_regression:
-            lines.append("\n**⚠️ NEGATIVE REGRESSION CANDIDATES** (Due for FEWER goals - FADE)\n")
+            lines.append("\n**NEGATIVE REGRESSION CANDIDATES** (Due for fewer goals)\n")
             lines.append("| Player | Team | Goals | xG | Diff | Recommendation |")
             lines.append("|--------|------|-------|-----|------|----------------|")
             for c in report.negative_regression[:5]:
@@ -1816,7 +1816,7 @@ Examples:
                         lines.append(f"- {prediction['game']['away_country']}: **{ag.get('name', 'Unknown')}** ({sv_pct:.3f} SV%, {gaa:.2f} GAA)")
                         # Add warning if goalie has elite stats (explains low probabilities)
                         if sv_pct > 0.940:
-                            lines.append(f"  ⚠️ **Elite goalie alert:** {ag.get('name')}'s {sv_pct:.3f} SV% significantly reduces goal probabilities")
+                            lines.append(f"  **Elite goalie:** {ag.get('name')} ({sv_pct:.3f} SV%) — significantly reduces goal probabilities")
                     lines.append("")
 
                 # Combine all players and sort by goal probability
@@ -1967,7 +1967,7 @@ Examples:
         sections: list[str] = []
         today_str = _date.today().strftime("%A, %B %-d")
 
-        sections.append(f"## 📋 Daily Briefing — {today_str}\n")
+        sections.append(f"## Daily Briefing — {today_str}\n")
 
         # ── 1. Tonight's schedule ──────────────────────────────────────
         try:
@@ -1977,17 +1977,17 @@ Examples:
                 schedule_data.get("games", []) if isinstance(schedule_data, dict) else []
             )
             if games:
-                sections.append("### 🏒 Tonight's Games")
+                sections.append("### Tonight's Games")
                 for g in games:
                     home = g.get("home_team") or g.get("home_team_abbrev", "")
                     away = g.get("away_team") or g.get("away_team_abbrev", "")
                     start = g.get("start_time", "TBD")
                     sections.append(f"- {away} @ {home}  ·  {start} ET")
             else:
-                sections.append("### 🏒 Tonight's Games\n- No NHL games scheduled today.")
+                sections.append("### Tonight's Games\n- No NHL games scheduled today.")
         except Exception as e:
             logger.warning("briefing_schedule_failed", error=str(e))
-            sections.append("### 🏒 Tonight's Games\n- Schedule unavailable.")
+            sections.append("### Tonight's Games\n- Schedule unavailable.")
 
         # ── 2. Key injury alerts (Out / LTIR / Day-to-Day only) ────────
         try:
@@ -2077,7 +2077,7 @@ Examples:
                 top_picks = all_scorers[:5]
 
                 if top_picks:
-                    sections.append("\n### 🎯 Top Scoring Picks Tonight")
+                    sections.append("\n### Top Scoring Picks Tonight")
                     for i, pred in enumerate(top_picks, 1):
                         model_pct = int(pred.prob_goal * 100)
                         matchup_str = f"vs {pred.opponent}" if pred.is_home else f"@ {pred.opponent}"
@@ -2088,7 +2088,7 @@ Examples:
                         if mkt:
                             mkt_pct = int(mkt * 100)
                             edge_pct = model_pct - mkt_pct
-                            edge_tag = f" 🔥 +{edge_pct}% edge" if edge_pct >= 5 else ""
+                            edge_tag = f" (+{edge_pct}% edge)" if edge_pct >= 5 else ""
                             line += f" | Market: {mkt_pct}%{edge_tag}"
 
                         if pred.factors:
@@ -2147,7 +2147,7 @@ Examples:
 
         # Show Olympics first if active (higher priority during tournament)
         if games.is_olympics_active and games.olympic_games:
-            lines.append(f"### 🏒 Olympic Hockey - Milano Cortina 2026 ({len(games.olympic_games)} games)\n")
+            lines.append(f"### Olympic Hockey - Milano Cortina 2026 ({len(games.olympic_games)} games)\n")
 
             for game in games.olympic_games:
                 round_str = f" ({game['round'].title()})" if game.get('round') else ""
@@ -2159,7 +2159,7 @@ Examples:
 
         # Show NHL games
         if games.nhl_games:
-            lines.append(f"### 🏒 NHL ({len(games.nhl_games)} games)\n")
+            lines.append(f"### NHL ({len(games.nhl_games)} games)\n")
 
             for game in games.nhl_games:
                 time_str = ""
@@ -2175,13 +2175,13 @@ Examples:
                     except Exception:
                         pass
 
-                state_emoji = ""
+                state_label = ""
                 if game.get("state") == "LIVE":
-                    state_emoji = " 🔴 LIVE"
+                    state_label = " — LIVE"
                 elif game.get("state") == "FINAL":
-                    state_emoji = " ✅ FINAL"
+                    state_label = " — FINAL"
 
-                lines.append(f"- **{game['away_team']}** @ **{game['home_team']}**{time_str}{state_emoji}")
+                lines.append(f"- **{game['away_team']}** @ **{game['home_team']}**{time_str}{state_label}")
                 if game.get("venue"):
                     lines.append(f"  _{game['venue']}_")
 
