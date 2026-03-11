@@ -174,7 +174,7 @@ class OddsValueCalculator:
         params = {
             "apiKey": self.api_key,
             "regions": "us",
-            "markets": "player_goal_scorer,player_points_over_under",
+            "markets": "player_goal_scorer_anytime,player_points,player_goals,player_assists",
             "oddsFormat": "american",
         }
 
