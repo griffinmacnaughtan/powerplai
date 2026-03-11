@@ -170,44 +170,6 @@ async def generate_daily_parlays(
         combined *= leg.probability
     parlays.append(Parlay("Best Bets", best_legs, round(combined, 4), target_date))
 
-    # ── Parlay 2: Value Play ─────────────────────────────────────────────────
-    # 2 goal scorers ranked 3-8 (mid-tier, higher payout) + 2 assists (from top point players)
-    mid_goals = all_preds[2:6]
-    import random
-    random.seed(int(target_date.strftime("%Y%m%d")) + 1)  # deterministic per day
-    chosen_mid = random.sample(mid_goals, min(2, len(mid_goals)))
-    used2 = {p["player"] for p in chosen_mid}
-    assist_pool = sorted(all_preds, key=lambda p: p["prob_point"], reverse=True)
-    assist_picks = [p for p in assist_pool if p["player"] not in used2][:2]
-
-    value_legs = []
-    for p in chosen_mid:
-        value_legs.append(ParlayLeg("goal_scorer", p["player"], p["team"], p["opponent"], p["prob_goal"]))
-    for p in assist_picks:
-        # assist probability ≈ point_prob * 0.72 (NHL average assist rate ~72% of points)
-        assist_prob = round(p["prob_point"] * 0.72, 3)
-        value_legs.append(ParlayLeg("assist", p["player"], p["team"], p["opponent"], assist_prob))
-
-    combined2 = 1.0
-    for leg in value_legs:
-        combined2 *= leg.probability
-    parlays.append(Parlay("Value Play", value_legs, round(combined2, 4), target_date))
-
-    # ── Parlay 3: Wild Card ──────────────────────────────────────────────────
-    # 3 goal scorers ranked 4-10 (different games if possible)
-    random.seed(int(target_date.strftime("%Y%m%d")) + 2)
-    wc_pool = all_preds[3:10]
-    wc_picks = random.sample(wc_pool, min(3, len(wc_pool)))
-
-    wc_legs = []
-    for p in wc_picks:
-        wc_legs.append(ParlayLeg("goal_scorer", p["player"], p["team"], p["opponent"], p["prob_goal"]))
-
-    combined3 = 1.0
-    for leg in wc_legs:
-        combined3 *= leg.probability
-    parlays.append(Parlay("Wild Card", wc_legs, round(combined3, 4), target_date))
-
     # ── Persist to DB ────────────────────────────────────────────────────────
     for parlay in parlays:
         legs_json = json.dumps([
