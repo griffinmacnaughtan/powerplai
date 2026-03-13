@@ -63,7 +63,7 @@ class QueryType:
     TONIGHT_PREDICTION = "tonight_prediction"  # "Who should I start tonight?"
     EDGE_FINDER = "edge_finder"         # "What are the best bets tonight?"
     REGRESSION = "regression"           # "Who is due for positive regression?"
-    VALUE_BET = "value_bet"             # "Is McDavid +180 good value?"
+    VALUE_BET = "value_bet"             # "Is McDavid +170 good value?"
     OLYMPICS = "olympics"               # "Olympic standings?" "How is McDavid doing in the Olympics?"
     SCHEDULE = "schedule"               # "What games are today?" "Who is playing tonight?"
     DAILY_BRIEFING = "daily_briefing"   # "Give me today's briefing" / "Daily briefing" button
