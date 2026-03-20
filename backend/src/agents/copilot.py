@@ -50,7 +50,7 @@ You will receive context from database queries and RAG searches. Use this inform
 Formatting rules:
 - Do NOT use emojis anywhere in your responses. Use plain text only.
 - Use markdown headers (##, ###) and bold (**text**) for structure.
-- Keep a clean, professional, analytical tone — like a quant sports analyst, not a sports broadcaster."""
+- Keep a clean, professional, analytical tone - like a quant sports analyst, not a sports broadcaster."""
 
 
 class QueryType:
@@ -413,7 +413,7 @@ Respond with JSON only:
     "is_olympics_query": true if asking about Olympics, Olympic hockey, Team Canada/USA/Sweden, Milano Cortina 2026, or Olympic standings/stats,
     "is_schedule_query": true if asking about games today, tonight, what's playing, schedule, matchups,
     "is_recent_results_query": true if asking about past/completed games, who played yesterday, last night's games, recent results, scores, or what happened in a game,
-    "days_offset": integer days back from today (0=today, 1=yesterday, 2=two days ago, etc.) — set when the query has a relative time reference,
+    "days_offset": integer days back from today (0=today, 1=yesterday, 2=two days ago, etc.) - set when the query has a relative time reference,
     "is_briefing_query": true if asking for a daily briefing, morning digest, lineup summary, or today's overview,
     "is_parlay_query": true if asking about today's parlays, model picks, parlay tracker, parlay record, or how parlays are performing,
     "top_n": number if asking for top N players OR a specific rank (e.g. "top 3" = 3, "top 5" = 5, "23rd best" = 23, "10th" = 10, "who is ranked 15" = 15),
@@ -888,7 +888,7 @@ Examples:
         year_range = f"{selected[-1][:4]}-{selected[0][4:]}" if len(selected) > 1 else selected[0][:4]
         seasons_label = f"last {len(selected)} seasons" if seasons_count else f"all available seasons ({year_range})"
 
-        stats_text = [f"**Top {limit} players by {stat_label} — {seasons_label} (aggregated):**\n"]
+        stats_text = [f"**Top {limit} players by {stat_label} - {seasons_label} (aggregated):**\n"]
         for i, row in enumerate(rows, 1):
             stats_text.append(
                 f"{i}. **{row.name}** ({row.position or 'F'}, {row.team_abbrev or 'N/A'}):\n"
@@ -1138,7 +1138,7 @@ Examples:
                                 if key not in market_probs or ol.implied_probability < market_probs[key]:
                                     market_probs[key] = ol.implied_probability
                 except Exception:
-                    pass  # odds are optional — degrade gracefully
+                    pass  # odds are optional - degrade gracefully
 
                 all_top_scorers = []
                 for game in games[:10]:  # Process up to 10 games
@@ -1155,7 +1155,7 @@ Examples:
                         predictions_text.append("\n**Top Goal Scorers:**")
                         for i, pred in enumerate(matchup.top_scorers[:5], 1):
                             prob_pct = int(pred.prob_goal * 100)
-                            line = f"{i}. **{pred.player_name}** ({pred.team}) — Model: {prob_pct}%"
+                            line = f"{i}. **{pred.player_name}** ({pred.team}) - Model: {prob_pct}%"
                             mkt = market_probs.get(pred.player_name.lower())
                             if mkt:
                                 mkt_pct = int(mkt * 100)
@@ -1183,7 +1183,7 @@ Examples:
                         prob_pct = int(pred.prob_goal * 100)
                         matchup_str = f"vs {pred.opponent}" if pred.is_home else f"@ {pred.opponent}"
                         line = (
-                            f"{i}. **{pred.player_name}** ({pred.team} {matchup_str}) — "
+                            f"{i}. **{pred.player_name}** ({pred.team} {matchup_str}) - "
                             f"Model: {prob_pct}% | Point: {int(pred.prob_point * 100)}%"
                         )
                         mkt = market_probs.get(pred.player_name.lower())
@@ -1352,7 +1352,7 @@ Examples:
         lines = ["**Players Being Traded:**"]
         for p in player_stats:
             xg = p['xg'] or 0
-            lines.append(f"- {p['name']} ({p['team']}, {p['position']}): {p['points']} pts in {p['games']} GP ({p['ppg']} PPG), {xg:.1f} xG — Value: {p['value']}")
+            lines.append(f"- {p['name']} ({p['team']}, {p['position']}): {p['points']} pts in {p['games']} GP ({p['ppg']} PPG), {xg:.1f} xG - Value: {p['value']}")
 
         lines.append(f"\n**Combined Trade Value:** {total_value:.1f}")
         lines.append(f"\n**Comparable Trade Targets** (value range {value_min:.1f} - {value_max:.1f}):")
@@ -1362,7 +1362,7 @@ Examples:
                 gp = t.games_played or 1
                 ppg = round((t.points or 0) / gp, 2)
                 xg = t.xg or 0
-                lines.append(f"- {t.name} ({t.team_abbrev}, {t.position}): {t.points} pts ({ppg} PPG), {xg:.1f} xG — Value: {t.value:.1f}")
+                lines.append(f"- {t.name} ({t.team_abbrev}, {t.position}): {t.points} pts ({ppg} PPG), {xg:.1f} xG - Value: {t.value:.1f}")
         else:
             lines.append("No comparable players found in the current season stats.")
 
@@ -1555,7 +1555,7 @@ Examples:
                 # No odds found for this player
                 lines.append(
                     f"| {edge.player_name} | {edge.team} | **{edge.edge_grade}** | "
-                    f"{edge.prob_goal:.1%} | — | — | — | No line | {key_factor} |"
+                    f"{edge.prob_goal:.1%} | - | - | - | No line | {key_factor} |"
                 )
             else:
                 lines.append(
@@ -2023,7 +2023,7 @@ Examples:
                         lines.append(f"- {prediction['game']['away_country']}: **{ag.get('name', 'Unknown')}** ({sv_pct:.3f} SV%, {gaa:.2f} GAA)")
                         # Add warning if goalie has elite stats (explains low probabilities)
                         if sv_pct > 0.940:
-                            lines.append(f"  **Elite goalie:** {ag.get('name')} ({sv_pct:.3f} SV%) — significantly reduces goal probabilities")
+                            lines.append(f"  **Elite goalie:** {ag.get('name')} ({sv_pct:.3f} SV%) - significantly reduces goal probabilities")
                     lines.append("")
 
                 # Combine all players and sort by goal probability
@@ -2174,7 +2174,7 @@ Examples:
         sections: list[str] = []
         today_str = _date.today().strftime("%A, %B %-d")
 
-        sections.append(f"## Daily Briefing — {today_str}\n")
+        sections.append(f"## Daily Briefing - {today_str}\n")
 
         # ── 1. Tonight's schedule ──────────────────────────────────────
         try:
@@ -2205,7 +2205,7 @@ Examples:
             for team, players in injury_data.get("injuries_by_team", {}).items():
                 for p in players:
                     if p.get("status") in priority_statuses:
-                        alerts.append(f"- **{p['player_name']}** ({team}) — {p['status']}: {p.get('description', '')}")
+                        alerts.append(f"- **{p['player_name']}** ({team}) - {p['status']}: {p.get('description', '')}")
             if alerts:
                 sections.append(f"\n### 🚑 Injury Alerts ({len(alerts)} players)")
                 sections.extend(alerts[:12])  # cap at 12 to avoid wall of text
@@ -2288,7 +2288,7 @@ Examples:
                     for i, pred in enumerate(top_picks, 1):
                         model_pct = int(pred.prob_goal * 100)
                         matchup_str = f"vs {pred.opponent}" if pred.is_home else f"@ {pred.opponent}"
-                        line = f"{i}. **{pred.player_name}** ({pred.team} {matchup_str}) — Model: **{model_pct}%**"
+                        line = f"{i}. **{pred.player_name}** ({pred.team} {matchup_str}) - Model: **{model_pct}%**"
 
                         # Attach market odds if available
                         mkt = market_probs.get(pred.player_name.lower())
@@ -2360,17 +2360,17 @@ Examples:
             if not games:
                 return f"No games found for {target_date.strftime('%B %d, %Y')}. Data may not have been ingested yet for that date."
 
-            lines = [f"**{date_label}'s Games — {target_date.strftime('%B %d, %Y')}**\n"]
+            lines = [f"**{date_label}'s Games - {target_date.strftime('%B %d, %Y')}**\n"]
 
             for g in games:
                 if g.home_score is not None and g.away_score is not None:
                     winner = g.home_team_abbrev if g.home_score > g.away_score else g.away_team_abbrev
                     lines.append(
                         f"**{g.away_team_abbrev} {g.away_score} @ {g.home_team_abbrev} {g.home_score}** "
-                        f"— {winner} win"
+                        f"- {winner} win"
                     )
                 else:
-                    lines.append(f"{g.away_team_abbrev} @ {g.home_team_abbrev} — {g.game_state}")
+                    lines.append(f"{g.away_team_abbrev} @ {g.home_team_abbrev} - {g.game_state}")
 
             # Top scorers from box scores
             scorers_result = await db.execute(
@@ -2463,9 +2463,9 @@ Examples:
 
                 state_label = ""
                 if game.get("state") == "LIVE":
-                    state_label = " — LIVE"
+                    state_label = " - LIVE"
                 elif game.get("state") == "FINAL":
-                    state_label = " — FINAL"
+                    state_label = " - FINAL"
 
                 lines.append(f"- **{game['away_team']}** @ **{game['home_team']}**{time_str}{state_label}")
                 if game.get("venue"):
@@ -2640,7 +2640,7 @@ Sources:
 - PowerplAI Scoring Model (NHL API game logs, recent form analysis)
 - [Any other sources from the context]"""
 
-        # Build the user message content — include images if provided (Claude vision)
+        # Build the user message content - include images if provided (Claude vision)
         if images:
             content: list = []
             for img in images:

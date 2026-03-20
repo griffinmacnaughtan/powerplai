@@ -272,7 +272,7 @@ async def update_team_goalie_stats(db: AsyncSession, season: str) -> dict:
 async def _ingest_moneypuck_season(db: AsyncSession, season_year: str) -> dict:
     """
     Download and store MoneyPuck stats for a given season year.
-    No rate-limit check — caller is responsible for throttling.
+    No rate-limit check - caller is responsible for throttling.
     """
     from backend.src.ingestion.moneypuck import download_season_stats, transform_moneypuck_to_schema
     from pathlib import Path

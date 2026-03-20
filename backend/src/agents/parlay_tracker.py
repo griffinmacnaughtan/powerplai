@@ -5,9 +5,9 @@ Generates daily model-based parlay picks, stores them before games,
 then validates each leg against actual outcomes. Tracks long-run accuracy.
 
 Parlay types generated each day:
-  1. Best Bets    — top probability goal scorers + best point producers
-  2. Value Play   — players with biggest model-vs-market edge (if odds available)
-  3. Wild Card    — mid-tier scorers for higher payout
+  1. Best Bets    - top probability goal scorers + best point producers
+  2. Value Play   - players with biggest model-vs-market edge (if odds available)
+  3. Wild Card    - mid-tier scorers for higher payout
 
 Leg types that can be validated from DB:
   - goal_scorer  : player scores >= 1 goal   (game_logs.goals)
@@ -377,9 +377,9 @@ async def get_parlay_record(db: AsyncSession, days: int = 30) -> dict:
             "total": row.total,
             "wins": row.wins,
             "losses": row.losses,
-            "win_rate": f"{round(row.wins / row.total * 100, 1)}%" if row.total else "—",
-            "avg_legs_hit_pct": f"{row.avg_legs_hit_pct}%" if row.avg_legs_hit_pct else "—",
-            "avg_model_prob_pct": f"{row.avg_model_prob_pct}%" if row.avg_model_prob_pct else "—",
+            "win_rate": f"{round(row.wins / row.total * 100, 1)}%" if row.total else "-",
+            "avg_legs_hit_pct": f"{row.avg_legs_hit_pct}%" if row.avg_legs_hit_pct else "-",
+            "avg_model_prob_pct": f"{row.avg_model_prob_pct}%" if row.avg_model_prob_pct else "-",
         })
 
     # Recent parlays (last 7 days) with full leg detail
@@ -424,13 +424,13 @@ async def get_today_parlays_context(db: AsyncSession) -> str:
     if not rows:
         return "No parlays generated for today yet."
 
-    lines = [f"**Today's Model Parlays — {date.today().strftime('%B %d, %Y')}**\n"]
+    lines = [f"**Today's Model Parlays - {date.today().strftime('%B %d, %Y')}**\n"]
     for row in rows:
         prob_pct = round(row.combined_prob * 100, 1)
-        lines.append(f"\n### {row.parlay_name} — Combined probability: {prob_pct}%")
+        lines.append(f"\n### {row.parlay_name} - Combined probability: {prob_pct}%")
         legs = json.loads(row.legs)
         for i, leg in enumerate(legs, 1):
             leg_prob = round(leg["probability"] * 100, 1)
             player_str = leg["player_name"] or leg["team"]
-            lines.append(f"{i}. {player_str} ({leg['team']}) — {leg['leg_type'].replace('_', ' ').title()}: {leg_prob}%")
+            lines.append(f"{i}. {player_str} ({leg['team']}) - {leg['leg_type'].replace('_', ' ').title()}: {leg_prob}%")
     return "\n".join(lines)

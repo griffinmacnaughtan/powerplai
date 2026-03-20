@@ -344,7 +344,7 @@ class PowerplAIAPI {
       const response = await fetch(`${this.baseUrl}/api/audit/accuracy-summary?days=${days}`)
       if (!response.ok) return { nhl: null, olympics: null }
       const data = await response.json()
-      // Backend returns { by_type: { nhl, olympics } } — flatten here
+      // Backend returns { by_type: { nhl, olympics } } - flatten here
       const byType = data?.by_type ?? data
       return { nhl: byType?.nhl ?? null, olympics: byType?.olympics ?? null }
     } catch {

@@ -135,7 +135,7 @@ export function ChatMessage({ message, isLatest }: ChatMessageProps) {
           </motion.div>
         )}
 
-        {/* Feedback buttons — only on assistant messages */}
+        {/* Feedback buttons - only on assistant messages */}
         {!isUser && (
           <FeedbackButtons
             queryType={message.queryType}

@@ -73,7 +73,7 @@ export function FeedbackButtons({ queryType = '', responsePreview = '' }: Feedba
         className="flex items-center gap-1.5 text-xs text-text-muted mt-2"
       >
         <Check className="w-3.5 h-3.5 text-green-500" />
-        <span>{selected === 'thumbs_up' ? 'Thanks for the feedback!' : 'Feedback submitted — we\'ll improve.'}</span>
+        <span>{selected === 'thumbs_up' ? 'Thanks for the feedback!' : 'Feedback submitted - we\'ll improve.'}</span>
       </motion.div>
     )
   }

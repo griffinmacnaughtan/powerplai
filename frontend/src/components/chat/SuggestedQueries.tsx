@@ -10,7 +10,7 @@ interface SuggestedQueriesProps {
 const suggestions = [
   {
     icon: Flame,
-    query: "Give me tonight's top 5 scoring picks with market odds — where does the model see the biggest edge?",
+    query: "Give me tonight's top 5 scoring picks with market odds - where does the model see the biggest edge?",
     label: "Top Picks + Odds",
     color: 'text-accent dark:text-accent-light',
     bgColor: 'bg-accent-muted dark:bg-accent/15',
@@ -45,7 +45,7 @@ const suggestions = [
   },
   {
     icon: Trophy,
-    query: 'I need goals in my fantasy lineup — which available forwards have the best goal-scoring probability this week?',
+    query: 'I need goals in my fantasy lineup - which available forwards have the best goal-scoring probability this week?',
     label: 'Fantasy: Need Goals',
     color: 'text-primary dark:text-ice',
     bgColor: 'bg-primary-50 dark:bg-primary/20',

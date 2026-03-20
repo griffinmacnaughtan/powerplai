@@ -508,7 +508,7 @@ async def ingest_recent_games(
                 results["schedule_games"] += n
             except Exception as e:
                 results["errors"].append(f"schedule {current}: {str(e)}")
-            # NHL schedule API returns a week at a time — step by 7 days
+            # NHL schedule API returns a week at a time - step by 7 days
             current += timedelta(days=7)
 
         # 2. Find completed games in the window with no box scores yet
