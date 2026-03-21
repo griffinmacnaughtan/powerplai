@@ -359,8 +359,8 @@ async def get_parlay_record(db: AsyncSession, days: int = 30) -> dict:
                 COUNT(*) FILTER (WHERE result IS NOT NULL)          AS total,
                 COUNT(*) FILTER (WHERE result = 'win')              AS wins,
                 COUNT(*) FILTER (WHERE result = 'loss')             AS losses,
-                ROUND(AVG(legs_hit::float / NULLIF(legs_total,0)) * 100, 1) AS avg_legs_hit_pct,
-                ROUND(AVG(combined_prob) * 100, 1)                  AS avg_model_prob_pct
+                ROUND((AVG(legs_hit::float / NULLIF(legs_total,0)) * 100)::numeric, 1) AS avg_legs_hit_pct,
+                ROUND((AVG(combined_prob) * 100)::numeric, 1)                  AS avg_model_prob_pct
             FROM daily_parlays
             WHERE game_date >= CURRENT_DATE - (CAST(:days AS INTEGER) * INTERVAL '1 day')
             GROUP BY parlay_name
