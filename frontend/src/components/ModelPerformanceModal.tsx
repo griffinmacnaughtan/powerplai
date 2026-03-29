@@ -1,6 +1,7 @@
 'use client'
 
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState, useMemo, useCallback } from 'react'
+import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X, Target, TrendingUp, CheckCircle2, XCircle, Clock, ChevronDown, ChevronUp, Zap, Award, BarChart3 } from 'lucide-react'
 import { api } from '@/lib/api'
@@ -45,6 +46,8 @@ interface Props {
 }
 
 type TabId = 'picks' | 'stats' | 'calibration'
+
+/* ─── Small reusable pieces ─── */
 
 function StatCard({ label, value, sub, icon: Icon, color }: {
   label: string; value: string; sub?: string; icon: React.ElementType; color: string
@@ -112,6 +115,8 @@ function CalibrationBar({ predicted, actual, sampleSize }: { predicted: number; 
   )
 }
 
+/* ─── Main modal ─── */
+
 export function ModelPerformanceModal({ open, onClose }: Props) {
   const [picks, setPicks] = useState<Pick[]>([])
   const [summary, setSummary] = useState<Summary | null>(null)
@@ -120,6 +125,10 @@ export function ModelPerformanceModal({ open, onClose }: Props) {
   const [tab, setTab] = useState<TabId>('picks')
   const [expandedDate, setExpandedDate] = useState<string | null>(null)
   const [days, setDays] = useState(30)
+  const [mounted, setMounted] = useState(false)
+
+  // Ensure we only portal after hydration
+  useEffect(() => { setMounted(true) }, [])
 
   useEffect(() => {
     if (!open) return
@@ -134,6 +143,26 @@ export function ModelPerformanceModal({ open, onClose }: Props) {
       setCalibration(calData)
     }).catch(() => {}).finally(() => setLoading(false))
   }, [open, days])
+
+  // Lock body scroll when open
+  useEffect(() => {
+    if (open) {
+      document.body.style.overflow = 'hidden'
+      return () => { document.body.style.overflow = '' }
+    }
+  }, [open])
+
+  // Escape key
+  const handleKeyDown = useCallback((e: KeyboardEvent) => {
+    if (e.key === 'Escape') onClose()
+  }, [onClose])
+
+  useEffect(() => {
+    if (open) {
+      document.addEventListener('keydown', handleKeyDown)
+      return () => document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [open, handleKeyDown])
 
   // Group picks by date
   const picksByDate = useMemo(() => {
@@ -160,120 +189,137 @@ export function ModelPerformanceModal({ open, onClose }: Props) {
     return stats
   }, [picks])
 
-  if (!open) return null
-
   const tabs: { id: TabId; label: string; icon: React.ElementType }[] = [
     { id: 'picks', label: 'Recent Picks', icon: Target },
     { id: 'stats', label: 'Performance', icon: BarChart3 },
     { id: 'calibration', label: 'Calibration', icon: TrendingUp },
   ]
 
-  return (
+  if (!mounted) return null
+
+  const modalContent = (
     <AnimatePresence>
       {open && (
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
-          onClick={onClose}
-        >
+        <>
+          {/* Backdrop */}
           <motion.div
-            initial={{ opacity: 0, scale: 0.95, y: 20 }}
+            key="modal-backdrop"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm"
+            style={{ zIndex: 9998 }}
+            onClick={onClose}
+          />
+
+          {/* Modal */}
+          <motion.div
+            key="modal-container"
+            initial={{ opacity: 0, scale: 0.95, y: 30 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.95, y: 20 }}
-            transition={{ type: 'spring', damping: 25, stiffness: 300 }}
-            onClick={e => e.stopPropagation()}
-            className="w-full max-w-2xl max-h-[85vh] flex flex-col rounded-2xl bg-background border border-border shadow-2xl overflow-hidden"
+            exit={{ opacity: 0, scale: 0.95, y: 30 }}
+            transition={{ type: 'spring', damping: 30, stiffness: 350 }}
+            className="fixed inset-0 flex items-center justify-center p-4 pointer-events-none"
+            style={{ zIndex: 9999 }}
           >
-            {/* Header */}
-            <div className="flex items-center justify-between px-5 py-4 border-b border-border bg-surface/50">
-              <div className="flex items-center gap-3">
-                <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-ice/20 to-primary/20 flex items-center justify-center">
-                  <Target className="w-5 h-5 text-ice" />
-                </div>
-                <div>
-                  <h2 className="text-lg font-bold text-text-primary">Model Performance</h2>
-                  <p className="text-xs text-text-muted">AI prediction accuracy & pick history</p>
-                </div>
-              </div>
-              <button
-                onClick={onClose}
-                className="p-2 rounded-lg hover:bg-surface-hover text-text-muted hover:text-text-primary transition-colors"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {/* Tabs */}
-            <div className="flex items-center gap-1 px-5 py-2 border-b border-border bg-surface/30">
-              {tabs.map(t => (
-                <button
-                  key={t.id}
-                  onClick={() => setTab(t.id)}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                    tab === t.id
-                      ? 'bg-ice/15 text-ice border border-ice/30'
-                      : 'text-text-muted hover:text-text-primary hover:bg-surface-hover'
-                  }`}
-                >
-                  <t.icon className="w-3.5 h-3.5" />
-                  {t.label}
-                </button>
-              ))}
-              <div className="ml-auto">
-                <select
-                  value={days}
-                  onChange={e => setDays(Number(e.target.value))}
-                  className="text-xs bg-surface border border-border rounded-lg px-2 py-1 text-text-muted cursor-pointer"
-                >
-                  <option value={7}>7 days</option>
-                  <option value={14}>14 days</option>
-                  <option value={30}>30 days</option>
-                  <option value={90}>90 days</option>
-                </select>
-              </div>
-            </div>
-
-            {/* Content */}
-            <div className="flex-1 overflow-y-auto p-5">
-              {loading ? (
-                <div className="flex items-center justify-center py-16">
-                  <div className="flex flex-col items-center gap-3">
-                    <div className="w-8 h-8 border-2 border-ice/30 border-t-ice rounded-full animate-spin" />
-                    <p className="text-sm text-text-muted">Loading performance data...</p>
+            <div
+              className="w-full max-w-2xl max-h-[85vh] flex flex-col rounded-2xl bg-background border border-border shadow-2xl overflow-hidden pointer-events-auto"
+              onClick={e => e.stopPropagation()}
+            >
+              {/* Header */}
+              <div className="flex-shrink-0 flex items-center justify-between px-5 py-4 border-b border-border bg-surface/50">
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-ice/20 to-primary/20 flex items-center justify-center">
+                    <Target className="w-5 h-5 text-ice" />
+                  </div>
+                  <div>
+                    <h2 className="text-lg font-bold text-text-primary">Model Performance</h2>
+                    <p className="text-xs text-text-muted">AI prediction accuracy &amp; pick history</p>
                   </div>
                 </div>
-              ) : tab === 'picks' ? (
-                <PicksTab
-                  picksByDate={picksByDate}
-                  dateStats={dateStats}
-                  expandedDate={expandedDate}
-                  setExpandedDate={setExpandedDate}
-                />
-              ) : tab === 'stats' ? (
-                <StatsTab summary={summary} calibration={calibration} />
-              ) : (
-                <CalibrationTab calibration={calibration} />
+                <button
+                  onClick={onClose}
+                  className="p-2 rounded-lg hover:bg-surface-hover text-text-muted hover:text-text-primary transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Tabs */}
+              <div className="flex-shrink-0 flex items-center gap-1 px-5 py-2 border-b border-border bg-surface/30">
+                {tabs.map(t => (
+                  <button
+                    key={t.id}
+                    onClick={() => setTab(t.id)}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                      tab === t.id
+                        ? 'bg-ice/15 text-ice border border-ice/30'
+                        : 'text-text-muted hover:text-text-primary hover:bg-surface-hover border border-transparent'
+                    }`}
+                  >
+                    <t.icon className="w-3.5 h-3.5" />
+                    {t.label}
+                  </button>
+                ))}
+                <div className="ml-auto">
+                  <select
+                    value={days}
+                    onChange={e => setDays(Number(e.target.value))}
+                    className="text-xs bg-surface border border-border rounded-lg px-2 py-1 text-text-muted cursor-pointer"
+                  >
+                    <option value={7}>7 days</option>
+                    <option value={14}>14 days</option>
+                    <option value={30}>30 days</option>
+                    <option value={90}>90 days</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Content */}
+              <div className="flex-1 min-h-0 overflow-y-auto p-5">
+                {loading ? (
+                  <div className="flex items-center justify-center py-16">
+                    <div className="flex flex-col items-center gap-3">
+                      <div className="w-8 h-8 border-2 border-ice/30 border-t-ice rounded-full animate-spin" />
+                      <p className="text-sm text-text-muted">Loading performance data...</p>
+                    </div>
+                  </div>
+                ) : tab === 'picks' ? (
+                  <PicksTab
+                    picksByDate={picksByDate}
+                    dateStats={dateStats}
+                    expandedDate={expandedDate}
+                    setExpandedDate={setExpandedDate}
+                  />
+                ) : tab === 'stats' ? (
+                  <StatsTab summary={summary} calibration={calibration} />
+                ) : (
+                  <CalibrationTab calibration={calibration} />
+                )}
+              </div>
+
+              {/* Footer */}
+              {summary && summary.validated > 0 && (
+                <div className="flex-shrink-0 px-5 py-3 border-t border-border bg-surface/30 flex items-center justify-between text-xs text-text-muted">
+                  <span>{summary.validated} validated predictions from {summary.total} total</span>
+                  <span className="flex items-center gap-1">
+                    <Zap className="w-3 h-3 text-ice" />
+                    Powered by PowerplAI prediction engine
+                  </span>
+                </div>
               )}
             </div>
-
-            {/* Footer */}
-            {summary && summary.validated > 0 && (
-              <div className="px-5 py-3 border-t border-border bg-surface/30 flex items-center justify-between text-xs text-text-muted">
-                <span>{summary.validated} validated predictions from {summary.total} total</span>
-                <span className="flex items-center gap-1">
-                  <Zap className="w-3 h-3 text-ice" />
-                  Powered by PowerplAI prediction engine
-                </span>
-              </div>
-            )}
           </motion.div>
-        </motion.div>
+        </>
       )}
     </AnimatePresence>
   )
+
+  return createPortal(modalContent, document.body)
 }
+
+/* ─── Tab: Recent Picks ─── */
 
 function PicksTab({ picksByDate, dateStats, expandedDate, setExpandedDate }: {
   picksByDate: [string, Pick[]][]
@@ -388,6 +434,8 @@ function PicksTab({ picksByDate, dateStats, expandedDate, setExpandedDate }: {
   )
 }
 
+/* ─── Tab: Performance Stats ─── */
+
 function StatsTab({ summary, calibration }: { summary: Summary | null; calibration: CalibrationData }) {
   if (!summary || summary.validated === 0) {
     return (
@@ -406,7 +454,6 @@ function StatsTab({ summary, calibration }: { summary: Summary | null; calibrati
 
   return (
     <div className="space-y-5">
-      {/* Key metrics */}
       <div className="grid grid-cols-2 gap-3">
         <StatCard
           label="Goal Pick Accuracy"
@@ -440,7 +487,6 @@ function StatsTab({ summary, calibration }: { summary: Summary | null; calibrati
         />
       </div>
 
-      {/* What the numbers mean */}
       <div className="rounded-xl border border-border bg-surface/50 p-4">
         <h4 className="text-sm font-semibold text-text-primary mb-2">How to read these stats</h4>
         <div className="space-y-2 text-xs text-text-muted">
@@ -452,6 +498,8 @@ function StatsTab({ summary, calibration }: { summary: Summary | null; calibrati
     </div>
   )
 }
+
+/* ─── Tab: Calibration ─── */
 
 function CalibrationTab({ calibration }: { calibration: CalibrationData }) {
   if (!calibration || !calibration.goal_calibration?.length) {
@@ -466,7 +514,6 @@ function CalibrationTab({ calibration }: { calibration: CalibrationData }) {
 
   return (
     <div className="space-y-5">
-      {/* Brier headline */}
       <div className="flex items-center gap-3 p-4 rounded-xl border border-border bg-surface/50">
         <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${
           calibration.brier_score < 0.2 ? 'bg-green-500/15' : 'bg-amber-500/15'
@@ -481,7 +528,6 @@ function CalibrationTab({ calibration }: { calibration: CalibrationData }) {
         </div>
       </div>
 
-      {/* Calibration bars */}
       <div>
         <h4 className="text-sm font-semibold text-text-primary mb-1">Predicted vs Actual Goal Rates</h4>
         <p className="text-xs text-text-muted mb-3">
@@ -499,7 +545,6 @@ function CalibrationTab({ calibration }: { calibration: CalibrationData }) {
         </div>
       </div>
 
-      {/* Explainer */}
       <div className="rounded-xl border border-border bg-surface/50 p-4">
         <h4 className="text-sm font-semibold text-text-primary mb-2">What is calibration?</h4>
         <p className="text-xs text-text-muted">
