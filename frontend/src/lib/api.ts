@@ -336,6 +336,43 @@ class PowerplAIAPI {
     }
   }
 
+  async getPicksHistory(days = 30): Promise<{
+    picks: Array<{
+      game_date: string
+      game_type: string
+      player_name: string
+      team: string
+      opponent: string
+      is_home: boolean
+      prob_goal: number
+      prob_point: number
+      confidence: string
+      confidence_score: number
+      actual_goals: number | null
+      actual_assists: number | null
+      actual_points: number | null
+      goal_hit: boolean | null
+      point_hit: boolean | null
+      validated: boolean
+    }>
+    summary: {
+      total: number
+      validated: number
+      goal_hits: number
+      point_hits: number
+      goal_hit_rate: number | null
+      point_hit_rate: number | null
+    }
+  }> {
+    try {
+      const response = await fetch(`${this.baseUrl}/api/audit/picks?days=${days}`)
+      if (!response.ok) return { picks: [], summary: { total: 0, validated: 0, goal_hits: 0, point_hits: 0, goal_hit_rate: null, point_hit_rate: null } }
+      return response.json()
+    } catch {
+      return { picks: [], summary: { total: 0, validated: 0, goal_hits: 0, point_hits: 0, goal_hit_rate: null, point_hit_rate: null } }
+    }
+  }
+
   async getAccuracySummary(days = 7): Promise<{
     nhl: { goal_hit_rate: string; validated: number; total: number } | null
     olympics: { goal_hit_rate: string; validated: number; total: number } | null

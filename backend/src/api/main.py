@@ -2301,6 +2301,88 @@ async def get_calibration_chart_data(
     return chart_data
 
 
+@app.get("/api/audit/picks")
+async def get_picks_history(
+    days: int = 30,
+    limit: int = 200,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get individual prediction picks with outcomes for display.
+
+    Returns recent validated and pending predictions with hit/miss details.
+    """
+    from datetime import date, timedelta
+
+    start_date = date.today() - timedelta(days=days)
+
+    try:
+        result = await db.execute(
+            text("""
+                SELECT
+                    game_date, game_type, player_name, team, opponent, is_home,
+                    prob_goal, prob_point, confidence, confidence_score,
+                    actual_goals, actual_assists, actual_points,
+                    goal_hit, point_hit, validated_at
+                FROM prediction_audit
+                WHERE game_date >= :start_date
+                ORDER BY game_date DESC, confidence_score DESC
+                LIMIT :limit
+            """),
+            {"start_date": start_date, "limit": limit},
+        )
+        rows = result.fetchall()
+    except Exception:
+        return {"picks": [], "summary": {}}
+
+    picks = []
+    total = 0
+    validated = 0
+    goal_hits = 0
+    point_hits = 0
+
+    for r in rows:
+        total += 1
+        is_validated = r.validated_at is not None
+        if is_validated:
+            validated += 1
+            if r.goal_hit:
+                goal_hits += 1
+            if r.point_hit:
+                point_hits += 1
+
+        picks.append({
+            "game_date": r.game_date.isoformat() if r.game_date else None,
+            "game_type": r.game_type,
+            "player_name": r.player_name,
+            "team": r.team,
+            "opponent": r.opponent,
+            "is_home": r.is_home,
+            "prob_goal": round(r.prob_goal, 3) if r.prob_goal else 0,
+            "prob_point": round(r.prob_point, 3) if r.prob_point else 0,
+            "confidence": r.confidence,
+            "confidence_score": round(r.confidence_score, 3) if r.confidence_score else 0,
+            "actual_goals": r.actual_goals,
+            "actual_assists": r.actual_assists,
+            "actual_points": r.actual_points,
+            "goal_hit": r.goal_hit,
+            "point_hit": r.point_hit,
+            "validated": is_validated,
+        })
+
+    return {
+        "picks": picks,
+        "summary": {
+            "total": total,
+            "validated": validated,
+            "goal_hits": goal_hits,
+            "point_hits": point_hits,
+            "goal_hit_rate": round(goal_hits / validated, 3) if validated > 0 else None,
+            "point_hit_rate": round(point_hits / validated, 3) if validated > 0 else None,
+        },
+    }
+
+
 @app.get("/api/model/evaluation")
 async def get_model_evaluation(
     start_date: str = None,
