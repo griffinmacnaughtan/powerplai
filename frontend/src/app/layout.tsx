@@ -18,10 +18,10 @@ export const metadata: Metadata = {
   keywords: ['hockey', 'NHL', 'analytics', 'AI', 'statistics', 'expected goals', 'xG', 'fantasy hockey', 'predictions', 'PowerplAI'],
   icons: {
     icon: [
-      { url: '/favicon.svg', type: 'image/svg+xml' },
-      { url: '/logo.gif', type: 'image/gif' },
+      { url: `${process.env.NEXT_PUBLIC_BASE_PATH || ''}/favicon.svg`, type: 'image/svg+xml' },
+      { url: `${process.env.NEXT_PUBLIC_BASE_PATH || ''}/logo.gif`, type: 'image/gif' },
     ],
-    apple: '/logo.gif',
+    apple: `${process.env.NEXT_PUBLIC_BASE_PATH || ''}/logo.gif`,
   },
 }
 
