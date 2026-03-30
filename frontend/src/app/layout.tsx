@@ -17,10 +17,7 @@ export const metadata: Metadata = {
   description: 'Your AI-powered hockey analyst. Get insights on NHL stats, player comparisons, predictions, and fantasy hockey advice.',
   keywords: ['hockey', 'NHL', 'analytics', 'AI', 'statistics', 'expected goals', 'xG', 'fantasy hockey', 'predictions', 'PowerplAI'],
   icons: {
-    icon: [
-      { url: `${process.env.NEXT_PUBLIC_BASE_PATH || ''}/favicon.svg`, type: 'image/svg+xml' },
-      { url: `${process.env.NEXT_PUBLIC_BASE_PATH || ''}/logo.gif`, type: 'image/gif' },
-    ],
+    icon: `${process.env.NEXT_PUBLIC_BASE_PATH || ''}/logo.gif`,
     apple: `${process.env.NEXT_PUBLIC_BASE_PATH || ''}/logo.gif`,
   },
 }
