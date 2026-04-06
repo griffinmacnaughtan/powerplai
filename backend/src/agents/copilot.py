@@ -288,6 +288,16 @@ class PowerplAICopilot:
                 context_parts.append(f"## Today's Games\n{schedule_context}")
                 sources.append({"type": "schedule", "data": "todays_games"})
 
+        # Check if this is a trend/hot streak query (e.g., "hottest forwards last 10 games")
+        elif classification.get("is_trend_query") or classification.get("type") == "trend_analysis":
+            n_games = classification.get("trend_n_games", 10)
+            position = classification.get("trend_position")
+            top_n = classification.get("top_n", 10)
+            trend_context = await self._fetch_hot_players(db, n_games=n_games, position=position, limit=top_n)
+            if trend_context:
+                context_parts.append(f"## Recent Form Analysis\n{trend_context}")
+                sources.append({"type": "sql", "data": "recent_form_game_logs"})
+
         # Check if this is an all-teams breakdown query (e.g., "top 3 on each team")
         elif classification.get("is_all_teams_query"):
             stats_requested = classification.get("stats", ["goals"])
@@ -412,6 +422,9 @@ Respond with JSON only:
     "is_regression_query": true if asking about regression, xG regression, due for goals, underperforming, overperforming, or shooting luck,
     "is_olympics_query": true if asking about Olympics, Olympic hockey, Team Canada/USA/Sweden, Milano Cortina 2026, or Olympic standings/stats,
     "is_schedule_query": true if asking about games today, tonight, what's playing, schedule, matchups,
+    "is_trend_query": true if asking about hot/cold streaks, hottest/coldest players, recent form, trending players, best performers over last N games, or who is on fire/slumping lately,
+    "trend_n_games": number of recent games to consider (e.g. "last 10 games" = 10, "last 5" = 5, default 10 if not specified),
+    "trend_position": "F" for forwards, "D" for defensemen, null if not specified or all positions,
     "is_recent_results_query": true if asking about past/completed games, who played yesterday, last night's games, recent results, scores, or what happened in a game,
     "days_offset": integer days back from today (0=today, 1=yesterday, 2=two days ago, etc.) - set when the query has a relative time reference,
     "is_briefing_query": true if asking for a daily briefing, morning digest, lineup summary, or today's overview,
@@ -483,7 +496,13 @@ Examples:
 - "Who are the best ten players over the past five years?" -> type: "leaders", is_leaders_query: true, is_multi_season_query: true, seasons_count: 5, stats: ["points"]
 - "Most goals in the last 3 seasons?" -> type: "leaders", is_leaders_query: true, is_multi_season_query: true, seasons_count: 3, stats: ["goals"]
 - "Career stats for McDavid" -> type: "stats_lookup", players: ["McDavid"], is_multi_season_query: true
-- "Top scorers over the past 3 years?" -> type: "leaders", is_leaders_query: true, is_multi_season_query: true, seasons_count: 3, stats: ["points"]"""
+- "Top scorers over the past 3 years?" -> type: "leaders", is_leaders_query: true, is_multi_season_query: true, seasons_count: 3, stats: ["points"]
+- "Who are the hottest forwards right now?" -> type: "trend_analysis", is_trend_query: true, trend_n_games: 10, trend_position: "F", top_n: 10
+- "Hottest 5 forwards based on last 10 games" -> type: "trend_analysis", is_trend_query: true, trend_n_games: 10, trend_position: "F", top_n: 5
+- "Who is on fire lately?" -> type: "trend_analysis", is_trend_query: true, trend_n_games: 10, top_n: 10
+- "Coldest players in the last 5 games" -> type: "trend_analysis", is_trend_query: true, trend_n_games: 5, top_n: 10
+- "Which defensemen are trending up?" -> type: "trend_analysis", is_trend_query: true, trend_n_games: 10, trend_position: "D", top_n: 10
+- "Best performers over the last 15 games" -> type: "trend_analysis", is_trend_query: true, trend_n_games: 15, top_n: 10"""
                 }
             ],
         )
@@ -990,6 +1009,97 @@ Examples:
                 f"{i}. **{row.name}** ({row.position}, {row.team_abbrev}):\n"
                 f"   GP: {row.games_played}, G: {row.goals}, A: {row.assists}, P: {row.points}, "
                 f"xG: {row.xg}, CF%: {row.corsi_for_pct}"
+            )
+
+        return "\n".join(stats_text)
+
+    async def _fetch_hot_players(
+        self,
+        db: AsyncSession,
+        n_games: int = 10,
+        position: str | None = None,
+        limit: int = 10,
+    ) -> str | None:
+        """Fetch hottest players based on recent game logs (last N games per player)."""
+        # Build position filter
+        position_filter = ""
+        params: dict = {"n_games": n_games, "limit": limit}
+        if position == "F":
+            position_filter = "AND p.position IN ('C', 'L', 'R', 'LW', 'RW')"
+        elif position == "D":
+            position_filter = "AND p.position = 'D'"
+
+        result = await db.execute(
+            text(f"""
+                SELECT
+                    p.name,
+                    p.position,
+                    p.team_abbrev,
+                    recent.games,
+                    recent.goals,
+                    recent.assists,
+                    recent.points,
+                    recent.shots,
+                    recent.ppg,
+                    season.season_goals,
+                    season.season_points,
+                    season.season_gp,
+                    CASE WHEN season.season_gp > 0
+                         THEN ROUND(CAST(season.season_points AS numeric) / season.season_gp, 2)
+                         ELSE 0 END AS season_ppg
+                FROM players p
+                JOIN LATERAL (
+                    SELECT
+                        COUNT(*) AS games,
+                        COALESCE(SUM(gl.goals), 0) AS goals,
+                        COALESCE(SUM(gl.assists), 0) AS assists,
+                        COALESCE(SUM(gl.points), 0) AS points,
+                        COALESCE(SUM(gl.shots), 0) AS shots,
+                        ROUND(CAST(COALESCE(SUM(gl.points), 0) AS numeric)
+                              / NULLIF(COUNT(*), 0), 2) AS ppg
+                    FROM (
+                        SELECT goals, assists, points, shots
+                        FROM game_logs
+                        WHERE player_id = p.id
+                        ORDER BY game_date DESC
+                        LIMIT :n_games
+                    ) gl
+                ) recent ON true
+                LEFT JOIN LATERAL (
+                    SELECT
+                        COALESCE(SUM(s.goals), 0) AS season_goals,
+                        COALESCE(SUM(s.points), 0) AS season_points,
+                        COALESCE(SUM(s.games_played), 0) AS season_gp
+                    FROM player_season_stats s
+                    WHERE s.player_id = p.id
+                      AND s.season = (SELECT MAX(season) FROM player_season_stats)
+                ) season ON true
+                WHERE recent.games >= :n_games {position_filter}
+                ORDER BY recent.ppg DESC, recent.goals DESC
+                LIMIT :limit
+            """),
+            params,
+        )
+
+        rows = result.fetchall()
+        if not rows:
+            return None
+
+        pos_label = {"F": "Forwards", "D": "Defensemen"}.get(position, "Players")
+        stats_text = [
+            f"**Hottest {pos_label} - Last {n_games} Games (ranked by points per game):**\n"
+        ]
+        for i, row in enumerate(rows, 1):
+            season_ppg = float(row.season_ppg) if row.season_ppg else 0
+            recent_ppg = float(row.ppg) if row.ppg else 0
+            diff = recent_ppg - season_ppg
+            trend = "UP" if diff > 0.1 else ("DOWN" if diff < -0.1 else "STEADY")
+            stats_text.append(
+                f"{i}. **{row.name}** ({row.position}, {row.team_abbrev}):\n"
+                f"   Last {row.games} GP: {row.goals}G, {row.assists}A, {row.points}P, "
+                f"{row.shots} SOG | **{recent_ppg:.2f} PPG**\n"
+                f"   Season: {row.season_gp} GP, {row.season_goals}G, {row.season_points}P | "
+                f"{season_ppg:.2f} PPG | Trend: **{trend}** ({diff:+.2f} PPG vs season avg)"
             )
 
         return "\n".join(stats_text)
