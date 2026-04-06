@@ -2308,32 +2308,36 @@ async def get_picks_history(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Get individual prediction picks with outcomes for display.
+    Get curated top 3 goal scorer picks per day + daily parlays.
 
-    Returns recent validated and pending predictions with hit/miss details.
+    Returns the strongest predictions only, not every raw audit entry.
     """
     from datetime import date, timedelta
 
     start_date = date.today() - timedelta(days=days)
 
+    # Top 3 picks per day: use ROW_NUMBER to rank by prob_goal within each date
     try:
         result = await db.execute(
             text("""
-                SELECT
-                    game_date, game_type, player_name, team, opponent, is_home,
-                    prob_goal, prob_point, confidence, confidence_score,
-                    actual_goals, actual_assists, actual_points,
-                    goal_hit, point_hit, validated_at
-                FROM prediction_audit
-                WHERE game_date >= :start_date
-                ORDER BY game_date DESC, confidence_score DESC
-                LIMIT :limit
+                SELECT * FROM (
+                    SELECT
+                        game_date, game_type, player_name, team, opponent, is_home,
+                        prob_goal, prob_point, confidence, confidence_score,
+                        actual_goals, actual_assists, actual_points,
+                        goal_hit, point_hit, validated_at,
+                        ROW_NUMBER() OVER (PARTITION BY game_date ORDER BY prob_goal DESC) AS rank
+                    FROM prediction_audit
+                    WHERE game_date >= :start_date
+                ) ranked
+                WHERE rank <= 3
+                ORDER BY game_date DESC, prob_goal DESC
             """),
-            {"start_date": start_date, "limit": limit},
+            {"start_date": start_date},
         )
         rows = result.fetchall()
     except Exception:
-        return {"picks": [], "summary": {}}
+        return {"picks": [], "parlays": [], "summary": {}}
 
     picks = []
     total = 0
@@ -2370,8 +2374,35 @@ async def get_picks_history(
             "validated": is_validated,
         })
 
+    # Fetch daily parlays for the same period
+    parlays_list = []
+    try:
+        parlay_result = await db.execute(
+            text("""
+                SELECT game_date, parlay_name, legs, combined_prob, result, legs_hit, legs_total
+                FROM daily_parlays
+                WHERE game_date >= :start_date
+                ORDER BY game_date DESC, parlay_name
+            """),
+            {"start_date": start_date},
+        )
+        import json as _json
+        for row in parlay_result.fetchall():
+            parlays_list.append({
+                "game_date": row.game_date.isoformat(),
+                "name": row.parlay_name,
+                "legs": _json.loads(row.legs),
+                "combined_prob": round(row.combined_prob, 4),
+                "result": row.result or "pending",
+                "legs_hit": row.legs_hit,
+                "legs_total": row.legs_total,
+            })
+    except Exception:
+        pass
+
     return {
         "picks": picks,
+        "parlays": parlays_list,
         "summary": {
             "total": total,
             "validated": validated,

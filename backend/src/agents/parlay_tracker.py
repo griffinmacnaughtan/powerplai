@@ -141,72 +141,61 @@ async def generate_daily_parlays(
 
     all_preds.sort(key=lambda p: p["prob_goal"], reverse=True)
 
-    parlays: list[Parlay] = []
+    # Build moneyline candidates per game
+    game_moneylines = []
+    for game in games:
+        home_prob = sum(p["prob_goal"] for p in all_preds if p["team"] == game.home_team)
+        away_prob = sum(p["prob_goal"] for p in all_preds if p["team"] == game.away_team)
+        total = home_prob + away_prob
+        if total > 0:
+            ml_team = game.home_team if home_prob >= away_prob else game.away_team
+            ml_opp = game.away_team if ml_team == game.home_team else game.home_team
+            ml_prob = min(max(max(home_prob, away_prob) / total, 0.45), 0.65)
+            game_moneylines.append({"team": ml_team, "opponent": ml_opp, "prob": round(ml_prob, 3)})
 
-    # ── Parlay 1: Best Bets ──────────────────────────────────────────────────
-    # Top 2 goal scorers + top 2 point producers (different players) + moneyline
-    top_goals = all_preds[:2]
-    top_points_pool = sorted(all_preds, key=lambda p: p["prob_point"], reverse=True)
-    used = {p["player"] for p in top_goals}
-    top_points = [p for p in top_points_pool if p["player"] not in used][:2]
+    if not game_moneylines:
+        game_moneylines.append({"team": games[0].home_team, "opponent": games[0].away_team, "prob": 0.52})
 
-    best_legs = []
-    for p in top_goals:
-        best_legs.append(ParlayLeg("goal_scorer", p["player"], p["team"], p["opponent"], p["prob_goal"]))
-    for p in top_points:
-        best_legs.append(ParlayLeg("point", p["player"], p["team"], p["opponent"], p["prob_point"]))
-
-    # Moneyline: home team with higher combined top-scorer probability
-    ml_game = games[0]
-    home_prob = sum(p["prob_goal"] for p in all_preds if p["team"] == ml_game.home_team)
-    away_prob = sum(p["prob_goal"] for p in all_preds if p["team"] == ml_game.away_team)
-    ml_team = ml_game.home_team if home_prob >= away_prob else ml_game.away_team
-    ml_opponent = ml_game.away_team if ml_team == ml_game.home_team else ml_game.home_team
-    ml_prob = max(home_prob, away_prob) / (home_prob + away_prob) if (home_prob + away_prob) > 0 else 0.52
-    ml_prob = min(max(ml_prob, 0.45), 0.65)  # cap reasonable range
-    best_legs.append(ParlayLeg("moneyline", None, ml_team, ml_opponent, round(ml_prob, 3)))
-
-    combined = 1.0
-    for leg in best_legs:
-        combined *= leg.probability
-    parlays.append(Parlay("Best Bets", best_legs, round(combined, 4), target_date))
-
-    # ── Parlay 2: Value Play ─────────────────────────────────────────────────
-    # 2 mid-tier goal scorers (ranked 3-6) + 2 assist picks
-    import random
-    mid_goals = all_preds[2:6]
-    random.seed(int(target_date.strftime("%Y%m%d")) + 1)
-    chosen_mid = random.sample(mid_goals, min(2, len(mid_goals)))
-    used2 = {p["player"] for p in chosen_mid}
+    # Build assist pool (high-point players likely to get assists)
     assist_pool = sorted(all_preds, key=lambda p: p["prob_point"], reverse=True)
-    assist_picks = [p for p in assist_pool if p["player"] not in used2][:2]
 
-    value_legs = []
-    for p in chosen_mid:
-        value_legs.append(ParlayLeg("goal_scorer", p["player"], p["team"], p["opponent"], p["prob_goal"]))
-    for p in assist_picks:
-        assist_prob = round(p["prob_point"] * 0.72, 3)
-        value_legs.append(ParlayLeg("assist", p["player"], p["team"], p["opponent"], assist_prob))
+    parlays: list[Parlay] = []
+    parlay_names = ["Sniper's Pick", "Playmaker's Edge", "Dark Horse"]
+    used_goal_scorers: set[str] = set()
+    used_assist_players: set[str] = set()
 
-    combined2 = 1.0
-    for leg in value_legs:
-        combined2 *= leg.probability
-    parlays.append(Parlay("Value Play", value_legs, round(combined2, 4), target_date))
+    for i, name in enumerate(parlay_names):
+        legs: list[ParlayLeg] = []
 
-    # ── Parlay 3: Wild Card ──────────────────────────────────────────────────
-    # 3 goal scorers ranked 4-10
-    random.seed(int(target_date.strftime("%Y%m%d")) + 2)
-    wc_pool = all_preds[3:10]
-    wc_picks = random.sample(wc_pool, min(3, len(wc_pool)))
+        # 1. Moneyline — rotate through games
+        ml = game_moneylines[i % len(game_moneylines)]
+        legs.append(ParlayLeg("moneyline", None, ml["team"], ml["opponent"], ml["prob"]))
 
-    wc_legs = []
-    for p in wc_picks:
-        wc_legs.append(ParlayLeg("goal_scorer", p["player"], p["team"], p["opponent"], p["prob_goal"]))
+        # 2. Goal scorer — pick next best unused scorer
+        scorer = None
+        for p in all_preds:
+            if p["player"] not in used_goal_scorers:
+                scorer = p
+                used_goal_scorers.add(p["player"])
+                break
+        if scorer:
+            legs.append(ParlayLeg("goal_scorer", scorer["player"], scorer["team"], scorer["opponent"], scorer["prob_goal"]))
 
-    combined3 = 1.0
-    for leg in wc_legs:
-        combined3 *= leg.probability
-    parlays.append(Parlay("Wild Card", wc_legs, round(combined3, 4), target_date))
+        # 3-4. Two assist predictions — high-point players not already used
+        assists_added = 0
+        for p in assist_pool:
+            if p["player"] not in used_goal_scorers and p["player"] not in used_assist_players:
+                assist_prob = round(p["prob_point"] * 0.72, 3)
+                legs.append(ParlayLeg("assist", p["player"], p["team"], p["opponent"], assist_prob))
+                used_assist_players.add(p["player"])
+                assists_added += 1
+                if assists_added >= 2:
+                    break
+
+        combined = 1.0
+        for leg in legs:
+            combined *= leg.probability
+        parlays.append(Parlay(name, legs, round(combined, 4), target_date))
 
     # ── Persist to DB ────────────────────────────────────────────────────────
     for parlay in parlays:

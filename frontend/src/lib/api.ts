@@ -355,6 +355,22 @@ class PowerplAIAPI {
       point_hit: boolean | null
       validated: boolean
     }>
+    parlays: Array<{
+      game_date: string
+      name: string
+      legs: Array<{
+        leg_type: string
+        player_name: string | null
+        team: string
+        opponent: string | null
+        probability: number
+        hit: boolean | null
+      }>
+      combined_prob: number
+      result: string
+      legs_hit: number | null
+      legs_total: number | null
+    }>
     summary: {
       total: number
       validated: number
@@ -366,10 +382,10 @@ class PowerplAIAPI {
   }> {
     try {
       const response = await fetch(`${this.baseUrl}/api/audit/picks?days=${days}`)
-      if (!response.ok) return { picks: [], summary: { total: 0, validated: 0, goal_hits: 0, point_hits: 0, goal_hit_rate: null, point_hit_rate: null } }
+      if (!response.ok) return { picks: [], parlays: [], summary: { total: 0, validated: 0, goal_hits: 0, point_hits: 0, goal_hit_rate: null, point_hit_rate: null } }
       return response.json()
     } catch {
-      return { picks: [], summary: { total: 0, validated: 0, goal_hits: 0, point_hits: 0, goal_hit_rate: null, point_hit_rate: null } }
+      return { picks: [], parlays: [], summary: { total: 0, validated: 0, goal_hits: 0, point_hits: 0, goal_hit_rate: null, point_hit_rate: null } }
     }
   }
 

@@ -25,6 +25,25 @@ type Pick = {
   validated: boolean
 }
 
+type ParlayLeg = {
+  leg_type: string
+  player_name: string | null
+  team: string
+  opponent: string | null
+  probability: number
+  hit: boolean | null
+}
+
+type DailyParlay = {
+  game_date: string
+  name: string
+  legs: ParlayLeg[]
+  combined_prob: number
+  result: string
+  legs_hit: number | null
+  legs_total: number | null
+}
+
 type Summary = {
   total: number
   validated: number
@@ -115,10 +134,40 @@ function CalibrationBar({ predicted, actual, sampleSize }: { predicted: number; 
   )
 }
 
+function ParlayResultBadge({ result }: { result: string }) {
+  const styles: Record<string, string> = {
+    win: 'bg-green-500/15 text-green-400 border-green-500/30',
+    loss: 'bg-red-500/15 text-red-400 border-red-500/30',
+    push: 'bg-amber-500/15 text-amber-400 border-amber-500/30',
+    pending: 'bg-surface text-text-muted border-border',
+  }
+  return (
+    <span className={`text-xs px-2 py-0.5 rounded border font-medium ${styles[result] ?? styles.pending}`}>
+      {result}
+    </span>
+  )
+}
+
+function LegTypeLabel({ type }: { type: string }) {
+  const labels: Record<string, { text: string; color: string }> = {
+    moneyline: { text: 'ML', color: 'text-blue-400 bg-blue-500/15 border-blue-500/30' },
+    goal_scorer: { text: 'G', color: 'text-red-400 bg-red-500/15 border-red-500/30' },
+    assist: { text: 'A', color: 'text-purple-400 bg-purple-500/15 border-purple-500/30' },
+    point: { text: 'P', color: 'text-amber-400 bg-amber-500/15 border-amber-500/30' },
+  }
+  const l = labels[type] ?? { text: type[0]?.toUpperCase() ?? '?', color: 'text-text-muted bg-surface border-border' }
+  return (
+    <span className={`text-[10px] w-5 h-5 rounded flex items-center justify-center border font-bold ${l.color}`}>
+      {l.text}
+    </span>
+  )
+}
+
 /* ─── Main modal ─── */
 
 export function ModelPerformanceModal({ open, onClose }: Props) {
   const [picks, setPicks] = useState<Pick[]>([])
+  const [parlays, setParlays] = useState<DailyParlay[]>([])
   const [summary, setSummary] = useState<Summary | null>(null)
   const [calibration, setCalibration] = useState<CalibrationData>(null)
   const [loading, setLoading] = useState(true)
@@ -139,6 +188,7 @@ export function ModelPerformanceModal({ open, onClose }: Props) {
       api.getCalibrationChart(),
     ]).then(([picksData, calData]) => {
       setPicks(picksData.picks)
+      setParlays(picksData.parlays ?? [])
       setSummary(picksData.summary)
       setCalibration(calData)
     }).catch(() => {}).finally(() => setLoading(false))
@@ -175,7 +225,25 @@ export function ModelPerformanceModal({ open, onClose }: Props) {
     return Object.entries(grouped).sort(([a], [b]) => b.localeCompare(a))
   }, [picks])
 
-  // Date-level stats
+  // Group parlays by date
+  const parlaysByDate = useMemo(() => {
+    const grouped: Record<string, DailyParlay[]> = {}
+    for (const p of parlays) {
+      if (!grouped[p.game_date]) grouped[p.game_date] = []
+      grouped[p.game_date].push(p)
+    }
+    return grouped
+  }, [parlays])
+
+  // All dates (union of picks and parlays)
+  const allDates = useMemo(() => {
+    const dates = new Set<string>()
+    for (const [d] of picksByDate) dates.add(d)
+    for (const d of Object.keys(parlaysByDate)) dates.add(d)
+    return Array.from(dates).sort((a, b) => b.localeCompare(a))
+  }, [picksByDate, parlaysByDate])
+
+  // Date-level stats (from curated top-3 picks)
   const dateStats = useMemo(() => {
     const stats: Record<string, { total: number; hits: number; validated: number }> = {}
     for (const p of picks) {
@@ -190,7 +258,7 @@ export function ModelPerformanceModal({ open, onClose }: Props) {
   }, [picks])
 
   const tabs: { id: TabId; label: string; icon: React.ElementType }[] = [
-    { id: 'picks', label: 'Recent Picks', icon: Target },
+    { id: 'picks', label: 'Daily Picks', icon: Target },
     { id: 'stats', label: 'Performance', icon: BarChart3 },
     { id: 'calibration', label: 'Calibration', icon: TrendingUp },
   ]
@@ -235,7 +303,7 @@ export function ModelPerformanceModal({ open, onClose }: Props) {
                   </div>
                   <div>
                     <h2 className="text-lg font-bold text-text-primary">Model Performance</h2>
-                    <p className="text-xs text-text-muted">AI prediction accuracy &amp; pick history</p>
+                    <p className="text-xs text-text-muted">Top picks &amp; parlay tracking</p>
                   </div>
                 </div>
                 <button
@@ -287,7 +355,9 @@ export function ModelPerformanceModal({ open, onClose }: Props) {
                   </div>
                 ) : tab === 'picks' ? (
                   <PicksTab
+                    allDates={allDates}
                     picksByDate={picksByDate}
+                    parlaysByDate={parlaysByDate}
                     dateStats={dateStats}
                     expandedDate={expandedDate}
                     setExpandedDate={setExpandedDate}
@@ -302,10 +372,10 @@ export function ModelPerformanceModal({ open, onClose }: Props) {
               {/* Footer */}
               {summary && summary.validated > 0 && (
                 <div className="flex-shrink-0 px-5 py-3 border-t border-border bg-surface/30 flex items-center justify-between text-xs text-text-muted">
-                  <span>{summary.validated} validated predictions from {summary.total} total</span>
+                  <span>{summary.validated} validated from top picks</span>
                   <span className="flex items-center gap-1">
                     <Zap className="w-3 h-3 text-ice" />
-                    Powered by PowerplAI prediction engine
+                    PowerplAI prediction engine
                   </span>
                 </div>
               )}
@@ -319,15 +389,17 @@ export function ModelPerformanceModal({ open, onClose }: Props) {
   return createPortal(modalContent, document.body)
 }
 
-/* ─── Tab: Recent Picks ─── */
+/* ─── Tab: Daily Picks ─── */
 
-function PicksTab({ picksByDate, dateStats, expandedDate, setExpandedDate }: {
+function PicksTab({ allDates, picksByDate, parlaysByDate, dateStats, expandedDate, setExpandedDate }: {
+  allDates: string[]
   picksByDate: [string, Pick[]][]
+  parlaysByDate: Record<string, DailyParlay[]>
   dateStats: Record<string, { total: number; hits: number; validated: number }>
   expandedDate: string | null
   setExpandedDate: (d: string | null) => void
 }) {
-  if (picksByDate.length === 0) {
+  if (allDates.length === 0) {
     return (
       <div className="text-center py-12">
         <Target className="w-12 h-12 text-text-muted mx-auto mb-3 opacity-40" />
@@ -339,12 +411,16 @@ function PicksTab({ picksByDate, dateStats, expandedDate, setExpandedDate }: {
 
   return (
     <div className="space-y-2">
-      {picksByDate.map(([dateStr, datePicks]) => {
+      {allDates.map((dateStr) => {
+        const datePicks = picksByDate.find(([d]) => d === dateStr)?.[1] ?? []
+        const dateParlays = parlaysByDate[dateStr] ?? []
         const stats = dateStats[dateStr]
         const isExpanded = expandedDate === dateStr
         const dateObj = new Date(dateStr + 'T12:00:00')
         const formatted = dateObj.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
-        const hitRate = stats.validated > 0 ? Math.round((stats.hits / stats.validated) * 100) : null
+        const hitRate = stats?.validated > 0 ? Math.round((stats.hits / stats.validated) * 100) : null
+        const parlayWins = dateParlays.filter(p => p.result === 'win').length
+        const parlayTotal = dateParlays.filter(p => p.result !== 'pending').length
 
         return (
           <div key={dateStr} className="rounded-xl border border-border overflow-hidden">
@@ -354,17 +430,29 @@ function PicksTab({ picksByDate, dateStats, expandedDate, setExpandedDate }: {
             >
               <div className="flex items-center gap-3">
                 <span className="text-sm font-semibold text-text-primary">{formatted}</span>
-                <span className="text-xs text-text-muted">{datePicks.length} picks</span>
+                {datePicks.length > 0 && (
+                  <span className="text-xs text-text-muted">{datePicks.length} picks</span>
+                )}
+                {dateParlays.length > 0 && (
+                  <span className="text-xs text-text-muted">{dateParlays.length} parlays</span>
+                )}
                 {hitRate !== null && (
                   <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${
-                    hitRate >= 40 ? 'bg-green-500/15 text-green-400' :
-                    hitRate >= 25 ? 'bg-amber-500/15 text-amber-400' :
+                    hitRate >= 50 ? 'bg-green-500/15 text-green-400' :
+                    hitRate >= 33 ? 'bg-amber-500/15 text-amber-400' :
                     'bg-red-500/15 text-red-400'
                   }`}>
-                    {hitRate}% goals hit
+                    {stats.hits}/{stats.validated} hit
                   </span>
                 )}
-                {stats.validated === 0 && (
+                {parlayTotal > 0 && (
+                  <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${
+                    parlayWins > 0 ? 'bg-green-500/15 text-green-400' : 'bg-red-500/15 text-red-400'
+                  }`}>
+                    {parlayWins}/{parlayTotal}W
+                  </span>
+                )}
+                {(!stats || stats.validated === 0) && dateParlays.every(p => p.result === 'pending') && (
                   <span className="text-xs text-text-muted italic flex items-center gap-1">
                     <Clock className="w-3 h-3" /> Pending
                   </span>
@@ -382,47 +470,98 @@ function PicksTab({ picksByDate, dateStats, expandedDate, setExpandedDate }: {
                   transition={{ duration: 0.2 }}
                   className="overflow-hidden"
                 >
-                  <div className="px-4 py-2 space-y-1 border-t border-border/50">
-                    {/* Column headers */}
-                    <div className="flex items-center gap-2 text-xs text-text-muted py-1 px-1">
-                      <span className="w-5" />
-                      <span className="flex-1">Player</span>
-                      <span className="w-16 text-center">Team</span>
-                      <span className="w-14 text-center">Prob</span>
-                      <span className="w-16 text-center">Conf</span>
-                      <span className="w-20 text-center">Result</span>
-                    </div>
-                    {datePicks.map((pick, i) => (
-                      <div
-                        key={`${pick.player_name}-${i}`}
-                        className={`flex items-center gap-2 text-sm py-1.5 px-1 rounded-lg ${
-                          pick.validated
-                            ? pick.goal_hit ? 'bg-green-500/5' : 'bg-red-500/5'
-                            : ''
-                        }`}
-                      >
-                        <ResultIcon hit={pick.goal_hit} />
-                        <span className="flex-1 font-medium text-text-primary truncate">{pick.player_name}</span>
-                        <span className="w-16 text-center text-xs text-text-muted">
-                          {pick.team} {pick.is_home ? 'vs' : '@'} {pick.opponent}
-                        </span>
-                        <span className="w-14 text-center text-xs font-mono text-text-secondary">
-                          {Math.round(pick.prob_goal * 100)}%
-                        </span>
-                        <span className="w-16 text-center">
-                          <ConfidenceBadge confidence={pick.confidence} />
-                        </span>
-                        <span className="w-20 text-center text-xs">
-                          {pick.validated ? (
-                            <span className="text-text-secondary">
-                              {pick.actual_goals}G {pick.actual_assists}A
-                            </span>
-                          ) : (
-                            <span className="text-text-muted italic">pending</span>
-                          )}
-                        </span>
+                  <div className="px-4 py-3 space-y-4 border-t border-border/50">
+                    {/* Top Goal Scorer Picks */}
+                    {datePicks.length > 0 && (
+                      <div>
+                        <h4 className="text-xs font-semibold text-text-muted uppercase tracking-wider mb-2">Top Goal Picks</h4>
+                        <div className="space-y-1.5">
+                          {datePicks.map((pick, i) => (
+                            <div
+                              key={`${pick.player_name}-${i}`}
+                              className={`flex items-center gap-3 text-sm py-2 px-3 rounded-lg border ${
+                                pick.validated
+                                  ? pick.goal_hit
+                                    ? 'bg-green-500/5 border-green-500/20'
+                                    : 'bg-red-500/5 border-red-500/20'
+                                  : 'border-border/50 bg-surface/50'
+                              }`}
+                            >
+                              <ResultIcon hit={pick.goal_hit} />
+                              <div className="flex-1 min-w-0">
+                                <span className="font-semibold text-text-primary">{pick.player_name}</span>
+                                <span className="text-xs text-text-muted ml-2">
+                                  {pick.team} {pick.is_home ? 'vs' : '@'} {pick.opponent}
+                                </span>
+                              </div>
+                              <span className="text-sm font-mono font-semibold text-ice">
+                                {Math.round(pick.prob_goal * 100)}%
+                              </span>
+                              <ConfidenceBadge confidence={pick.confidence} />
+                              {pick.validated && (
+                                <span className="text-xs text-text-secondary font-medium w-14 text-right">
+                                  {pick.actual_goals}G {pick.actual_assists}A
+                                </span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
                       </div>
-                    ))}
+                    )}
+
+                    {/* Parlays */}
+                    {dateParlays.length > 0 && (
+                      <div>
+                        <h4 className="text-xs font-semibold text-text-muted uppercase tracking-wider mb-2">Parlays</h4>
+                        <div className="space-y-2">
+                          {dateParlays.map((parlay, pi) => (
+                            <div
+                              key={`${parlay.name}-${pi}`}
+                              className={`rounded-lg border p-3 ${
+                                parlay.result === 'win' ? 'bg-green-500/5 border-green-500/20' :
+                                parlay.result === 'loss' ? 'bg-red-500/5 border-red-500/20' :
+                                'bg-surface/50 border-border/50'
+                              }`}
+                            >
+                              <div className="flex items-center justify-between mb-2">
+                                <span className="text-sm font-semibold text-text-primary">{parlay.name}</span>
+                                <div className="flex items-center gap-2">
+                                  {parlay.legs_hit !== null && parlay.legs_total !== null && (
+                                    <span className="text-xs text-text-muted">
+                                      {parlay.legs_hit}/{parlay.legs_total} legs
+                                    </span>
+                                  )}
+                                  <ParlayResultBadge result={parlay.result} />
+                                </div>
+                              </div>
+                              <div className="space-y-1">
+                                {parlay.legs.map((leg, li) => (
+                                  <div key={li} className="flex items-center gap-2 text-xs">
+                                    <LegTypeLabel type={leg.leg_type} />
+                                    {leg.hit !== null && leg.hit !== undefined ? (
+                                      leg.hit
+                                        ? <CheckCircle2 className="w-3.5 h-3.5 text-green-400 flex-shrink-0" />
+                                        : <XCircle className="w-3.5 h-3.5 text-red-400 flex-shrink-0" />
+                                    ) : (
+                                      <Clock className="w-3.5 h-3.5 text-text-muted flex-shrink-0" />
+                                    )}
+                                    <span className="text-text-primary flex-1 truncate">
+                                      {leg.player_name ?? `${leg.team} win`}
+                                    </span>
+                                    <span className="text-text-muted">
+                                      {leg.team}{leg.opponent ? ` vs ${leg.opponent}` : ''}
+                                    </span>
+                                    <span className="font-mono text-text-secondary">
+                                      {Math.round(leg.probability * 100)}%
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </motion.div>
               )}
@@ -481,7 +620,7 @@ function StatsTab({ summary, calibration }: { summary: Summary | null; calibrati
         <StatCard
           label="Sample Size"
           value={String(summary.validated)}
-          sub={`of ${summary.total} total picks`}
+          sub={`top picks only`}
           icon={Zap}
           color="bg-purple-500/15 text-purple-400"
         />
@@ -490,9 +629,9 @@ function StatsTab({ summary, calibration }: { summary: Summary | null; calibrati
       <div className="rounded-xl border border-border bg-surface/50 p-4">
         <h4 className="text-sm font-semibold text-text-primary mb-2">How to read these stats</h4>
         <div className="space-y-2 text-xs text-text-muted">
-          <p><strong className="text-text-secondary">Goal Pick Accuracy</strong> — % of our goal scorer predictions that actually scored. NHL average goal probability is ~25%, so above that means the model is finding real edges.</p>
-          <p><strong className="text-text-secondary">Brier Score</strong> — Measures probability calibration (0 = perfect, 1 = worst). Below 0.20 means the model&apos;s confidence levels are meaningful.</p>
-          <p><strong className="text-text-secondary">Calibration</strong> — When we say &quot;40% chance to score,&quot; does that player actually score ~40% of the time? Check the Calibration tab for details.</p>
+          <p><strong className="text-text-secondary">Goal Pick Accuracy</strong> — Hit rate on our top 3 daily goal picks. Measured against only the highest-confidence selections, not every player in the league.</p>
+          <p><strong className="text-text-secondary">Brier Score</strong> — Probability calibration (0 = perfect, 1 = worst). Below 0.20 means model probabilities are meaningful.</p>
+          <p><strong className="text-text-secondary">Calibration</strong> — When we say &quot;40% chance to score,&quot; does that player actually score ~40% of the time? Check the Calibration tab.</p>
         </div>
       </div>
     </div>

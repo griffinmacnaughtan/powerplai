@@ -562,21 +562,25 @@ class PredictionEngine:
         prob_point = 1 - math.exp(-expected_points) if expected_points > 0 else 0.1
         prob_multi_point = 1 - math.exp(-expected_points) - expected_points * math.exp(-expected_points) if expected_points > 0 else 0.02
 
-        # Calculate confidence
+        # Calculate confidence from prediction strength + data quality
         games_analyzed = (recent.get("games", 0) + season.get("games", 0) + h2h.get("games", 0))
-        confidence_score = min(1.0, games_analyzed / 50)  # Max confidence at 50+ games
+        data_quality = min(1.0, games_analyzed / 50)
 
-        # Boost confidence if we have matchup context
+        # Confidence reflects how strong the prediction signal is:
+        # - High prob_goal with solid data = high confidence
+        # - Low prob_goal or thin data = lower confidence
+        confidence_score = prob_goal * 0.7 + data_quality * 0.3
         if matchup_context and matchup_context.get("home_goalie") and matchup_context.get("away_goalie"):
-            confidence_score = min(1.0, confidence_score + 0.1)
+            confidence_score = min(1.0, confidence_score + 0.05)
 
-        if confidence_score >= 0.7:
+        if confidence_score >= 0.30:
             confidence = "high"
-        elif confidence_score >= 0.4:
+        elif confidence_score >= 0.18:
             confidence = "medium"
         else:
             confidence = "low"
-            factors.append("Limited data - prediction less reliable")
+            if data_quality < 0.4:
+                factors.append("Limited data - prediction less reliable")
 
         return PlayerPrediction(
             player_name=player_name,
