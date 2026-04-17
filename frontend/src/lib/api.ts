@@ -389,6 +389,117 @@ class PowerplAIAPI {
     }
   }
 
+  async getPlayoffStatus(): Promise<{ is_active: boolean; season: string | null }> {
+    try {
+      const r = await fetch(`${this.baseUrl}/api/playoffs/status`)
+      if (!r.ok) return { is_active: false, season: null }
+      return r.json()
+    } catch {
+      return { is_active: false, season: null }
+    }
+  }
+
+  async getPlayoffBracket(): Promise<{
+    season: string | null
+    round: number
+    series: Array<{
+      team_a: string
+      team_b: string
+      team_a_wins: number
+      team_b_wins: number
+      games_played: number
+      status: 'in_progress' | 'scheduled' | 'complete'
+      winner: string | null
+      next_game_date: string | null
+      next_game_time: string | null
+    }>
+  }> {
+    try {
+      const r = await fetch(`${this.baseUrl}/api/playoffs/bracket`)
+      if (!r.ok) return { season: null, round: 0, series: [] }
+      return r.json()
+    } catch {
+      return { season: null, round: 0, series: [] }
+    }
+  }
+
+  async getPlayoffOverview(): Promise<{
+    season: string | null
+    games_completed: number
+    avg_goals_per_game: number
+    total_goals: number
+    top_scorers: Array<{
+      player_id: number
+      name: string
+      team: string
+      games: number
+      goals: number
+      assists: number
+      points: number
+      ppg: number
+    }>
+    hottest_teams: Array<{
+      team: string
+      games: number
+      wins: number
+      losses: number
+      goal_diff: number
+    }>
+  }> {
+    try {
+      const r = await fetch(`${this.baseUrl}/api/playoffs/overview`)
+      if (!r.ok) {
+        return {
+          season: null,
+          games_completed: 0,
+          avg_goals_per_game: 0,
+          total_goals: 0,
+          top_scorers: [],
+          hottest_teams: [],
+        }
+      }
+      return r.json()
+    } catch {
+      return {
+        season: null,
+        games_completed: 0,
+        avg_goals_per_game: 0,
+        total_goals: 0,
+        top_scorers: [],
+        hottest_teams: [],
+      }
+    }
+  }
+
+  async getPlayoffBestBets(): Promise<{
+    date: string
+    is_playoffs: boolean
+    games?: number
+    picks: Array<{
+      player_name: string
+      team: string
+      opponent: string
+      is_home: boolean
+      market: string
+      line: string
+      probability: number
+      prob_goal: number
+      prob_point: number
+      confidence: 'high' | 'medium' | 'low'
+      expected_points: number
+      opponent_goalie: string | null
+      factors: string[]
+    }>
+  }> {
+    try {
+      const r = await fetch(`${this.baseUrl}/api/playoffs/best-bets`)
+      if (!r.ok) return { date: '', is_playoffs: false, picks: [] }
+      return r.json()
+    } catch {
+      return { date: '', is_playoffs: false, picks: [] }
+    }
+  }
+
   async getAccuracySummary(days = 7): Promise<{
     nhl: { goal_hit_rate: string; validated: number; total: number } | null
     olympics: { goal_hit_rate: string; validated: number; total: number } | null

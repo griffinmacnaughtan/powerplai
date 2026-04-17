@@ -2645,6 +2645,80 @@ async def trigger_parlay_generation(
 
 
 # -------------------------------------------------------------------------
+# Playoff endpoints
+# -------------------------------------------------------------------------
+
+
+@app.get("/api/playoffs/status")
+async def get_playoffs_status(db: AsyncSession = Depends(get_db)):
+    """Whether playoffs are currently active and which season we're tracking."""
+    from backend.src.agents.playoffs import is_playoffs_active, get_current_playoff_season
+    active = await is_playoffs_active(db)
+    season = await get_current_playoff_season(db)
+    return {"is_active": active, "season": season}
+
+
+@app.get("/api/playoffs/bracket")
+async def get_playoffs_bracket(
+    season: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the bracket view (series, wins, next games) for the active playoffs."""
+    from backend.src.agents.playoffs import get_playoff_bracket
+    return await get_playoff_bracket(db, season)
+
+
+@app.get("/api/playoffs/overview")
+async def get_playoffs_overview(
+    season: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Headline stats: top scorers, hottest teams, total goals, avg G/gm."""
+    from backend.src.agents.playoffs import get_playoff_overview
+    return await get_playoff_overview(db, season)
+
+
+@app.get("/api/playoffs/best-bets")
+async def get_playoffs_best_bets(
+    game_date: str | None = None,
+    top_n: int = 5,
+    db: AsyncSession = Depends(get_db),
+):
+    """Top ranked player prop picks across tonight's playoff slate."""
+    from backend.src.agents.playoffs import get_most_likely_playoff_bets
+    d = date.fromisoformat(game_date) if game_date else None
+    return await get_most_likely_playoff_bets(db, d, top_n)
+
+
+@app.get("/api/playoffs/player/{player_name}")
+async def get_player_playoff_record(
+    player_name: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Career playoff experience for a player (games, PPG, multiplier)."""
+    from backend.src.agents.playoffs import get_player_playoff_experience
+    result = await db.execute(
+        text("SELECT id FROM players WHERE name ILIKE :n ORDER BY id LIMIT 1"),
+        {"n": f"%{player_name}%"},
+    )
+    row = result.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Player not found")
+    exp = await get_player_playoff_experience(db, row.id)
+    return {
+        "player_id": exp.player_id,
+        "player_name": player_name,
+        "games": exp.games,
+        "goals": exp.goals,
+        "assists": exp.assists,
+        "points": exp.points,
+        "ppg": exp.ppg,
+        "gpg": exp.gpg,
+        "experience_multiplier": exp.experience_multiplier,
+    }
+
+
+# -------------------------------------------------------------------------
 # Debug endpoints (disable in production)
 # -------------------------------------------------------------------------
 

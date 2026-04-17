@@ -10,6 +10,7 @@ import { SuggestedQueries } from '@/components/chat/SuggestedQueries'
 import { TypingIndicator } from '@/components/LoadingDots'
 import { AccuracyBadge } from '@/components/AccuracyBadge'
 import { ParlayTracker } from '@/components/ParlayTracker'
+import { PlayoffCards } from '@/components/PlayoffCards'
 import { Button } from '@/components/ui'
 import { useChat } from '@/hooks/useChat'
 
@@ -186,6 +187,9 @@ export default function Home() {
 
               {/* Parlay tracker streak */}
               <ParlayTracker />
+
+              {/* Playoff bracket / overview / best bets */}
+              <PlayoffCards />
 
               {/* Feature badges */}
               <motion.div

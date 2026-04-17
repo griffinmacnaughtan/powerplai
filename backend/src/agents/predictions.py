@@ -52,6 +52,19 @@ WEIGHTS = {
     "team_pace": 0.10,        # Game pace/environment
 }
 
+# Playoff-mode weights: experience joins the model and recency takes a back
+# seat. Regular-season sample is less predictive in playoffs because the
+# intensity/system change; proven playoff producers beat the regression.
+PLAYOFF_WEIGHTS = {
+    "recent_form": 0.22,
+    "season_baseline": 0.18,
+    "h2h_history": 0.10,
+    "home_away": 0.08,
+    "goalie_matchup": 0.12,
+    "team_pace": 0.05,
+    "playoff_experience": 0.25,  # career playoff PPG, scaled by sample depth
+}
+
 # Minimum sample sizes for reliable predictions
 MIN_GAMES_RECENT = 3
 MIN_GAMES_SEASON = 10
@@ -101,6 +114,12 @@ class PlayerPrediction:
     opponent_goalie: str | None = None   # Name of opponent's likely starter
     opponent_goalie_sv_pct: float | None = None  # Goalie's save percentage
 
+    # Playoff mode (set when predicting game_type=3 games)
+    is_playoff: bool = False
+    playoff_games: int = 0                # Career playoff games played
+    playoff_ppg: float = 0.0              # Career playoff points-per-game
+    playoff_multiplier: float = 1.0       # Multiplier derived from experience
+
 
 @dataclass
 class MatchupPrediction:
@@ -124,6 +143,7 @@ class MatchupPrediction:
     home_goalie: dict | None = None
     away_goalie: dict | None = None
     pace_rating: str | None = None  # "high", "average", "low"
+    is_playoff: bool = False
 
 
 class PredictionEngine:
@@ -196,6 +216,7 @@ class PredictionEngine:
         away_team: str,
         game_date: date | None = None,
         top_n: int = 10,
+        is_playoff: bool | None = None,
     ) -> MatchupPrediction:
         """
         Get predictions for a matchup between two teams.
@@ -215,19 +236,23 @@ class PredictionEngine:
         # Get game info if it exists
         game_info = await self._get_game_info(db, home_team, away_team, game_date)
 
+        # Auto-detect playoff if caller didn't specify
+        if is_playoff is None:
+            is_playoff = bool(game_info and game_info.get("game_type") == 3)
+
         # Get matchup context (goalies, pace, etc.)
         matchup_context = await self._get_matchup_context(db, home_team, away_team)
 
         # Get predictions for home team players (playing against away goalie)
         home_players = await self._get_team_predictions(
             db, home_team, away_team, is_home=True, game_date=game_date,
-            limit=top_n, matchup_context=matchup_context
+            limit=top_n, matchup_context=matchup_context, is_playoff=is_playoff,
         )
 
         # Get predictions for away team players (playing against home goalie)
         away_players = await self._get_team_predictions(
             db, away_team, home_team, is_home=False, game_date=game_date,
-            limit=top_n, matchup_context=matchup_context
+            limit=top_n, matchup_context=matchup_context, is_playoff=is_playoff,
         )
 
         # Combine and rank by goal probability
@@ -259,6 +284,7 @@ class PredictionEngine:
             home_goalie=matchup_context.get("home_goalie"),
             away_goalie=matchup_context.get("away_goalie"),
             pace_rating=pace_rating,
+            is_playoff=is_playoff,
         )
 
     async def get_player_prediction(
@@ -322,7 +348,7 @@ class PredictionEngine:
         """Get game info from database if available."""
         result = await db.execute(
             text("""
-                SELECT nhl_game_id, venue, start_time_utc
+                SELECT nhl_game_id, venue, start_time_utc, game_type
                 FROM games
                 WHERE home_team_abbrev = :home_team
                   AND away_team_abbrev = :away_team
@@ -337,6 +363,7 @@ class PredictionEngine:
                 "game_id": row.nhl_game_id,
                 "venue": row.venue,
                 "start_time": row.start_time_utc.isoformat() if row.start_time_utc else None,
+                "game_type": row.game_type,
             }
         return None
 
@@ -395,6 +422,7 @@ class PredictionEngine:
         game_date: date,
         limit: int = 10,
         matchup_context: dict | None = None,
+        is_playoff: bool = False,
     ) -> list[PlayerPrediction]:
         """Get predictions for top players on a team."""
         # Get current season
@@ -420,7 +448,8 @@ class PredictionEngine:
         for row in result.fetchall():
             pred = await self._calculate_player_prediction(
                 db, row.id, row.name, team, opponent, is_home, game_date,
-                matchup_context=matchup_context
+                matchup_context=matchup_context,
+                is_playoff=is_playoff,
             )
             if pred:
                 predictions.append(pred)
@@ -437,14 +466,18 @@ class PredictionEngine:
         is_home: bool,
         game_date: date,
         matchup_context: dict | None = None,
+        is_playoff: bool = False,
     ) -> PlayerPrediction:
         """
         Calculate prediction for a player using the enhanced weighted model.
 
         Model: P(score) = w1*recent + w2*season + w3*h2h + w4*home_away + w5*goalie + w6*pace
+        When is_playoff=True, a "playoff experience" factor is added and the
+        active weights shift to PLAYOFF_WEIGHTS.
         """
         import math
         factors = []
+        active_weights = PLAYOFF_WEIGHTS if is_playoff else WEIGHTS
 
         # 1. Get recent form (last 5 games)
         recent = await self._get_recent_form(db, player_id, game_date, n_games=5)
@@ -524,16 +557,40 @@ class PredictionEngine:
         weights_used = []
 
         if recent_form_ppg is not None:
-            components.append(("recent", recent_form_ppg, WEIGHTS["recent_form"]))
-            weights_used.append(WEIGHTS["recent_form"])
+            components.append(("recent", recent_form_ppg, active_weights["recent_form"]))
+            weights_used.append(active_weights["recent_form"])
 
         if season_avg_ppg is not None:
-            components.append(("season", season_avg_ppg, WEIGHTS["season_baseline"]))
-            weights_used.append(WEIGHTS["season_baseline"])
+            components.append(("season", season_avg_ppg, active_weights["season_baseline"]))
+            weights_used.append(active_weights["season_baseline"])
 
         if h2h_ppg is not None:
-            components.append(("h2h", h2h_ppg, WEIGHTS["h2h_history"]))
-            weights_used.append(WEIGHTS["h2h_history"])
+            components.append(("h2h", h2h_ppg, active_weights["h2h_history"]))
+            weights_used.append(active_weights["h2h_history"])
+
+        # 7. Playoff experience (only applied in playoff mode)
+        playoff_games = 0
+        playoff_ppg = 0.0
+        playoff_multiplier = 1.0
+        if is_playoff:
+            from backend.src.agents.playoffs import get_player_playoff_experience
+            exp = await get_player_playoff_experience(db, player_id)
+            playoff_games = exp.games
+            playoff_ppg = exp.ppg
+            playoff_multiplier = exp.experience_multiplier
+
+            if exp.games >= 5:
+                # Use career playoff PPG as a direct component. Falls back to
+                # regular-season PPG if playoff sample is tiny.
+                components.append(("playoff_experience", exp.ppg, active_weights["playoff_experience"]))
+                weights_used.append(active_weights["playoff_experience"])
+
+                if exp.games >= 20 and exp.ppg >= 0.80:
+                    factors.append(f"Proven playoff performer: {exp.ppg:.2f} PPG in {exp.games} career PO games")
+                elif exp.games >= 40 and exp.ppg < 0.50:
+                    factors.append(f"Struggles in playoffs: {exp.ppg:.2f} PPG in {exp.games} career PO games")
+            else:
+                factors.append(f"Limited playoff history ({exp.games} career PO games)")
 
         # Normalize weights for the base components
         total_weight = sum(weights_used) if weights_used else 1.0
@@ -544,9 +601,15 @@ class PredictionEngine:
             expected_points += value * (weight / total_weight)
 
         # Apply adjustments (these are additive modifiers)
-        expected_points += home_away_adjustment * WEIGHTS["home_away"]
-        expected_points += goalie_adjustment * WEIGHTS["goalie_matchup"]
-        expected_points += pace_adjustment * WEIGHTS["team_pace"]
+        expected_points += home_away_adjustment * active_weights["home_away"]
+        expected_points += goalie_adjustment * active_weights["goalie_matchup"]
+        expected_points += pace_adjustment * active_weights["team_pace"]
+
+        # In playoff mode, scale the whole expectation by the experience
+        # multiplier. Veterans with a real track record get a bump, rookies
+        # with no sample hold steady (multiplier == 1.0).
+        if is_playoff and playoff_multiplier != 1.0:
+            expected_points *= playoff_multiplier
 
         # Ensure expected_points doesn't go negative
         expected_points = max(0.0, expected_points)
@@ -607,6 +670,10 @@ class PredictionEngine:
             confidence_score=round(confidence_score, 2),
             games_analyzed=games_analyzed,
             factors=factors,
+            is_playoff=is_playoff,
+            playoff_games=playoff_games,
+            playoff_ppg=round(playoff_ppg, 2),
+            playoff_multiplier=round(playoff_multiplier, 3),
         )
 
     async def _get_recent_form(
