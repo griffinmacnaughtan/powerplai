@@ -40,6 +40,7 @@ type Pick = {
   team: string
   opponent: string
   is_home: boolean
+  game_date: string
   market: string
   line: string
   probability: number
@@ -52,6 +53,19 @@ const ROUND_LABEL: Record<number, string> = {
   2: 'Second Round',
   3: 'Conference Finals',
   4: 'Stanley Cup Final',
+}
+
+function formatShortDate(iso: string): string {
+  if (!iso) return ''
+  const [y, m, d] = iso.split('-').map(Number)
+  if (!y || !m || !d) return iso
+  const target = new Date(y, m - 1, d)
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  const diffDays = Math.round((target.getTime() - today.getTime()) / 86_400_000)
+  if (diffDays === 0) return 'Tonight'
+  if (diffDays === 1) return 'Tomorrow'
+  return target.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })
 }
 
 function SeriesRow({ s }: { s: Series }) {
@@ -106,6 +120,10 @@ export function PlayoffCards() {
     hottest_teams: HotTeam[]
   } | null>(null)
   const [picks, setPicks] = useState<Pick[]>([])
+  const [betsWindow, setBetsWindow] = useState<{ days: number; games: number }>({
+    days: 3,
+    games: 0,
+  })
 
   useEffect(() => {
     api.getPlayoffStatus().then(async s => {
@@ -117,7 +135,7 @@ export function PlayoffCards() {
       const [b, o, p] = await Promise.all([
         api.getPlayoffBracket(),
         api.getPlayoffOverview(),
-        api.getPlayoffBestBets(),
+        api.getPlayoffBestBets(3, 8),
       ])
       setBracket({ round: b.round, series: b.series })
       setOverview({
@@ -127,6 +145,7 @@ export function PlayoffCards() {
         hottest_teams: o.hottest_teams,
       })
       setPicks(p.picks)
+      setBetsWindow({ days: p.days, games: p.games })
     })
   }, [])
 
@@ -224,10 +243,13 @@ export function PlayoffCards() {
             <p className="text-xs font-semibold text-text-primary uppercase tracking-wider">
               Most Likely Bets
             </p>
+            <span className="ml-auto text-[10px] text-text-muted">
+              next {betsWindow.days}d · {betsWindow.games} gm
+            </span>
           </div>
           <div className="space-y-2 flex-1">
             {picks.length > 0 ? (
-              picks.slice(0, 4).map((p, i) => (
+              picks.slice(0, 5).map((p, i) => (
                 <div
                   key={`${p.player_name}-${i}`}
                   className="flex items-center gap-2 py-1.5 border-b border-border/50 last:border-0"
@@ -237,7 +259,7 @@ export function PlayoffCards() {
                       {p.player_name}
                     </p>
                     <p className="text-[10px] text-text-muted truncate">
-                      {p.team} {p.is_home ? 'vs' : '@'} {p.opponent} · {p.line}
+                      {formatShortDate(p.game_date)} · {p.team} {p.is_home ? 'vs' : '@'} {p.opponent} · {p.line}
                     </p>
                   </div>
                   <div className="flex-shrink-0 text-right">
@@ -251,7 +273,7 @@ export function PlayoffCards() {
                 </div>
               ))
             ) : (
-              <p className="text-xs text-text-muted italic">No playoff games tonight</p>
+              <p className="text-xs text-text-muted italic">No playoff games in the window</p>
             )}
           </div>
         </div>

@@ -471,15 +471,18 @@ class PowerplAIAPI {
     }
   }
 
-  async getPlayoffBestBets(): Promise<{
-    date: string
+  async getPlayoffBestBets(days = 3, topN = 8): Promise<{
+    start_date: string
+    days: number
     is_playoffs: boolean
-    games?: number
+    games: number
     picks: Array<{
       player_name: string
       team: string
       opponent: string
       is_home: boolean
+      game_date: string
+      start_time: string | null
       market: string
       line: string
       probability: number
@@ -491,12 +494,13 @@ class PowerplAIAPI {
       factors: string[]
     }>
   }> {
+    const empty = { start_date: '', days, is_playoffs: false, games: 0, picks: [] }
     try {
-      const r = await fetch(`${this.baseUrl}/api/playoffs/best-bets`)
-      if (!r.ok) return { date: '', is_playoffs: false, picks: [] }
+      const r = await fetch(`${this.baseUrl}/api/playoffs/best-bets?days=${days}&top_n=${topN}`)
+      if (!r.ok) return empty
       return r.json()
     } catch {
-      return { date: '', is_playoffs: false, picks: [] }
+      return empty
     }
   }
 

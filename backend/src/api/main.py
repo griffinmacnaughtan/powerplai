@@ -2680,14 +2680,15 @@ async def get_playoffs_overview(
 
 @app.get("/api/playoffs/best-bets")
 async def get_playoffs_best_bets(
-    game_date: str | None = None,
-    top_n: int = 5,
+    start_date: str | None = None,
+    days: int = 3,
+    top_n: int = 8,
     db: AsyncSession = Depends(get_db),
 ):
-    """Top ranked player prop picks across tonight's playoff slate."""
+    """Top ranked player prop picks across the next `days` of playoff games."""
     from backend.src.agents.playoffs import get_most_likely_playoff_bets
-    d = date.fromisoformat(game_date) if game_date else None
-    return await get_most_likely_playoff_bets(db, d, top_n)
+    d = date.fromisoformat(start_date) if start_date else None
+    return await get_most_likely_playoff_bets(db, d, top_n, days)
 
 
 @app.get("/api/playoffs/player/{player_name}")

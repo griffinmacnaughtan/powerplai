@@ -392,7 +392,7 @@ async def get_tonight_playoff_games(
     d = target_date or date.today()
     result = await db.execute(
         text("""
-            SELECT nhl_game_id, home_team_abbrev, away_team_abbrev, start_time_utc, venue, game_state
+            SELECT nhl_game_id, game_date, home_team_abbrev, away_team_abbrev, start_time_utc, venue, game_state
             FROM games
             WHERE game_type = :pt AND game_date = :d
             ORDER BY start_time_utc
@@ -402,6 +402,40 @@ async def get_tonight_playoff_games(
     return [
         {
             "game_id": r.nhl_game_id,
+            "game_date": r.game_date.isoformat(),
+            "home_team": r.home_team_abbrev,
+            "away_team": r.away_team_abbrev,
+            "start_time": r.start_time_utc.isoformat() if r.start_time_utc else None,
+            "venue": r.venue,
+            "state": r.game_state,
+        }
+        for r in result.fetchall()
+    ]
+
+
+async def get_upcoming_playoff_games(
+    db: AsyncSession,
+    start_date: date | None = None,
+    days: int = 3,
+) -> list[dict[str, Any]]:
+    """Playoff games scheduled in a forward-looking window (inclusive)."""
+    start = start_date or date.today()
+    end = start + timedelta(days=max(0, days - 1))
+    result = await db.execute(
+        text("""
+            SELECT nhl_game_id, game_date, home_team_abbrev, away_team_abbrev,
+                   start_time_utc, venue, game_state
+            FROM games
+            WHERE game_type = :pt
+              AND game_date BETWEEN :start AND :end
+            ORDER BY game_date ASC, start_time_utc ASC
+        """),
+        {"pt": PLAYOFF_GAME_TYPE, "start": start, "end": end},
+    )
+    return [
+        {
+            "game_id": r.nhl_game_id,
+            "game_date": r.game_date,
             "home_team": r.home_team_abbrev,
             "away_team": r.away_team_abbrev,
             "start_time": r.start_time_utc.isoformat() if r.start_time_utc else None,
@@ -414,45 +448,61 @@ async def get_tonight_playoff_games(
 
 async def get_most_likely_playoff_bets(
     db: AsyncSession,
-    target_date: date | None = None,
-    top_n: int = 5,
+    start_date: date | None = None,
+    top_n: int = 8,
+    days: int = 3,
 ) -> dict[str, Any]:
     """
-    Rank player prop bets for tonight's playoff slate.
+    Rank player prop bets across the next `days` of playoff games.
 
     Uses the same prediction engine as regular season, but asks it to
-    flag playoff games so the experience factor kicks in.
+    flag playoff games so the experience factor kicks in. One pick per
+    player across the window — we keep their highest-value leg so a
+    star slated for multiple games doesn't dominate the list.
     """
     from backend.src.agents.predictions import PredictionEngine
 
-    d = target_date or date.today()
-    games = await get_tonight_playoff_games(db, d)
+    start = start_date or date.today()
+    games = await get_upcoming_playoff_games(db, start, days)
     if not games:
-        return {"date": d.isoformat(), "is_playoffs": False, "picks": []}
+        return {
+            "start_date": start.isoformat(),
+            "days": days,
+            "is_playoffs": False,
+            "games": 0,
+            "picks": [],
+        }
 
     engine = PredictionEngine(db=db)
-    all_preds = []
+    # Keep the single best prediction per player across the window
+    by_player: dict[int, tuple[float, Any, dict[str, Any]]] = {}
     for g in games:
         try:
             matchup = await engine.get_matchup_prediction(
                 db,
                 home_team=g["home_team"],
                 away_team=g["away_team"],
-                game_date=d,
+                game_date=g["game_date"],
                 top_n=10,
                 is_playoff=True,
             )
             for p in matchup.top_scorers:
-                all_preds.append(p)
+                key = p.player_id
+                # Rank same player across nights by point probability
+                existing = by_player.get(key)
+                if existing is None or p.prob_point > existing[0]:
+                    by_player[key] = (p.prob_point, p, g)
         except Exception as e:
-            logger.warning("playoff_matchup_prediction_failed", home=g["home_team"], away=g["away_team"], error=str(e))
+            logger.warning(
+                "playoff_matchup_prediction_failed",
+                home=g["home_team"], away=g["away_team"], date=str(g["game_date"]),
+                error=str(e),
+            )
 
-    # Rank by point probability (broader than goals, more bets hit); break ties by confidence
-    all_preds.sort(key=lambda p: (p.prob_point, p.confidence_score), reverse=True)
-    top = all_preds[:top_n]
+    ranked = sorted(by_player.values(), key=lambda t: (t[0], t[1].confidence_score), reverse=True)
 
     picks = []
-    for p in top:
+    for _, p, g in ranked[:top_n]:
         # Pick the stronger leg type based on the probabilities
         if p.prob_goal >= 0.55:
             market, prob, line = "Anytime Goal Scorer", p.prob_goal, "1+ Goal"
@@ -466,6 +516,8 @@ async def get_most_likely_playoff_bets(
             "team": p.team,
             "opponent": p.opponent,
             "is_home": p.is_home,
+            "game_date": g["game_date"].isoformat(),
+            "start_time": g["start_time"],
             "market": market,
             "line": line,
             "probability": round(prob, 3),
@@ -477,4 +529,10 @@ async def get_most_likely_playoff_bets(
             "factors": p.factors[:3],
         })
 
-    return {"date": d.isoformat(), "is_playoffs": True, "picks": picks, "games": len(games)}
+    return {
+        "start_date": start.isoformat(),
+        "days": days,
+        "is_playoffs": True,
+        "games": len(games),
+        "picks": picks,
+    }
