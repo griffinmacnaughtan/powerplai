@@ -216,6 +216,35 @@ class PowerplAICopilot:
                 "query_type": "parlay_track",
             }
 
+        # PRIORITY: Playoff-aware queries. Anything mentioning the bracket,
+        # Stanley Cup, conference finals, "who will win", etc. needs the full
+        # postseason context (which series exist, who's playing, what the
+        # records are) BEFORE we route to the generic prediction handler -
+        # otherwise the LLM gets handed single-game data and can't answer.
+        if classification.get("is_playoffs_query"):
+            playoff_context = await self._fetch_playoff_context(db, classification)
+            if playoff_context:
+                context_parts.append(playoff_context)
+                sources.append({"type": "playoffs", "data": "playoff_bracket"})
+                # If the query was also tagged as a prediction query, also fetch
+                # specific game predictions for any teams the user named, so
+                # the LLM has both the bracket view AND tonight's projections.
+                if classification.get("is_prediction_query") and classification.get("teams"):
+                    pred_context = await self._fetch_predictions(db, classification)
+                    if pred_context:
+                        context_parts.append(f"## Scoring Predictions\n{pred_context}")
+                        sources.append({"type": "prediction", "data": "scoring_predictions"})
+                # Short-circuit: we have everything needed for a playoff
+                # question. Skip the rest of the if/elif chain.
+                response = await self._generate_response(
+                    user_query, "\n\n".join(context_parts), conversation_history, images
+                )
+                return {
+                    "response": response,
+                    "sources": sources,
+                    "query_type": "playoffs",
+                }
+
         # PRIORITY: Check for Olympic betting queries first (parlay, value bets, edges)
         if classification.get("is_olympics_query") and classification.get("is_edge_query"):
             value_context = await self._fetch_olympic_value_bet(db, classification)
@@ -435,6 +464,7 @@ Respond with JSON only:
     "days_offset": integer days back from today (0=today, 1=yesterday, 2=two days ago, etc.) - set when the query has a relative time reference,
     "is_briefing_query": true if asking for a daily briefing, morning digest, lineup summary, or today's overview,
     "is_parlay_query": true if asking about today's parlays, model picks, parlay tracker, parlay record, or how parlays are performing,
+    "is_playoffs_query": true if asking about playoffs, bracket, Stanley Cup, conference final, second round, championship, who will win the Cup, playoff predictions, playoff matchups, or any NHL postseason context,
     "top_n": number if asking for top N players OR a specific rank (e.g. "top 3" = 3, "top 5" = 5, "23rd best" = 23, "10th" = 10, "who is ranked 15" = 15),
     "offered_odds": number if asking about a specific bet with odds (e.g. "+210" = 210, "-150" = -150)
 }}
@@ -508,7 +538,18 @@ Examples:
 - "Who is on fire lately?" -> type: "trend_analysis", is_trend_query: true, trend_n_games: 10, top_n: 10
 - "Coldest players in the last 5 games" -> type: "trend_analysis", is_trend_query: true, trend_n_games: 5, top_n: 10
 - "Which defensemen are trending up?" -> type: "trend_analysis", is_trend_query: true, trend_n_games: 10, trend_position: "D", top_n: 10
-- "Best performers over the last 15 games" -> type: "trend_analysis", is_trend_query: true, trend_n_games: 15, top_n: 10"""
+- "Best performers over the last 15 games" -> type: "trend_analysis", is_trend_query: true, trend_n_games: 15, top_n: 10
+- "Who will win the Stanley Cup?" -> type: "prediction", is_playoffs_query: true, is_prediction_query: true
+- "Which conference final participant will win the Cup?" -> type: "prediction", is_playoffs_query: true, is_prediction_query: true
+- "Stanley Cup odds?" -> type: "prediction", is_playoffs_query: true
+- "Show me the playoff bracket" -> type: "stats_lookup", is_playoffs_query: true
+- "How is the Eastern conference final going?" -> type: "stats_lookup", is_playoffs_query: true
+- "Who is leading the playoffs in points?" -> type: "leaders", is_playoffs_query: true, is_leaders_query: true
+- "CAR vs MTL series breakdown" -> type: "stats_lookup", teams: ["CAR", "MTL"], is_playoffs_query: true
+- "What round are we in?" -> type: "stats_lookup", is_playoffs_query: true
+- "Who advanced to the conference finals?" -> type: "stats_lookup", is_playoffs_query: true
+- "Predictions for game 2 of the Western conference final" -> type: "matchup_prediction", is_playoffs_query: true, is_prediction_query: true
+- "Picks for tonight's playoff game" -> type: "tonight_prediction", is_playoffs_query: true, is_prediction_query: true, is_tonight_query: true"""
                 }
             ],
         )
@@ -1169,6 +1210,191 @@ Examples:
             )
 
         return "\n".join(stats_text)
+
+    async def _fetch_playoff_context(
+        self,
+        db: AsyncSession,
+        classification: dict,
+    ) -> str | None:
+        """
+        Comprehensive playoff context for chat queries about the bracket,
+        Stanley Cup odds, conference finals, or any postseason topic.
+
+        Pulls (all from the playoff agent that already exists):
+        - Current round + season
+        - Full bracket (round-by-round, all series with records, winners,
+          status, last/next game dates)
+        - For each in-progress series: per-team top playoff scorers and
+          goalies plus the model's locked picks for the next game
+        - Top playoff scorers overall
+
+        The bug this fixes: previously a question like "which conference
+        final participant will win the Stanley Cup?" got classified as
+        is_prediction_query and routed to _fetch_predictions, which only
+        fetched today's single-game scoring predictions. The LLM had no
+        idea who was IN the conference finals, never mind their records.
+        """
+        from backend.src.agents.playoffs import (
+            get_playoff_bracket,
+            get_playoff_overview,
+            get_series_detail,
+            is_playoffs_active,
+        )
+
+        active = await is_playoffs_active(db)
+        if not active:
+            return None
+
+        bracket = await get_playoff_bracket(db)
+        if not bracket.get("series"):
+            return None
+
+        round_label_map = {
+            1: "First Round",
+            2: "Second Round",
+            3: "Conference Finals",
+            4: "Stanley Cup Final",
+        }
+        current_round = bracket.get("round", 0)
+        round_label = round_label_map.get(current_round, "Playoffs")
+
+        lines: list[str] = []
+        lines.append(f"## NHL Playoffs - {round_label} (Season {bracket.get('season')})")
+        lines.append("")
+
+        # Active series first (in_progress) - this is what fans care about most.
+        active_series = [s for s in bracket["series"] if s.get("status") == "in_progress"]
+        if active_series:
+            lines.append(f"**Live now ({len(active_series)} series):**")
+            for s in active_series:
+                conf = (s.get("conference") or "").title()
+                rnd = round_label_map.get(s.get("round") or 0, "")
+                leader = (
+                    s["team_a"] if s["team_a_wins"] > s["team_b_wins"]
+                    else s["team_b"] if s["team_b_wins"] > s["team_a_wins"]
+                    else None
+                )
+                lead_text = (
+                    f" - {leader} leads"
+                    if leader
+                    else " - tied" if s["games_played"] > 0 else ""
+                )
+                next_game = ""
+                if s.get("next_game_date"):
+                    next_game = f", next game {s['next_game_date']}"
+                lines.append(
+                    f"- {conf} {rnd}: **{s['team_a']} {s['team_a_wins']}-{s['team_b_wins']} {s['team_b']}**{lead_text}{next_game}"
+                )
+            lines.append("")
+
+        # Completed series grouped by round so the model can reason about
+        # how each remaining team got here.
+        completed = [s for s in bracket["series"] if s.get("status") == "complete"]
+        if completed:
+            by_round: dict[int, list[dict]] = {}
+            for s in completed:
+                by_round.setdefault(s.get("round") or 0, []).append(s)
+            for rnd in sorted(by_round.keys()):
+                rnd_name = round_label_map.get(rnd, f"Round {rnd}")
+                lines.append(f"**{rnd_name} (complete):**")
+                for s in by_round[rnd]:
+                    conf = (s.get("conference") or "").title()
+                    lines.append(
+                        f"- {conf}: {s['team_a']} {s['team_a_wins']}-{s['team_b_wins']} {s['team_b']} -> **{s.get('winner')} advanced**"
+                    )
+            lines.append("")
+
+        # Postseason scoring + pace context (top scorers across the whole bracket).
+        try:
+            overview = await get_playoff_overview(db, top_n=8)
+        except Exception:
+            overview = None
+        if overview:
+            lines.append("**Postseason overview**")
+            lines.append(
+                f"- Games completed: {overview.get('games_completed', 0)}, "
+                f"avg goals/game: {overview.get('avg_goals_per_game', 0)}, "
+                f"total goals: {overview.get('total_goals', 0)}"
+            )
+            top_scorers = overview.get("top_scorers") or []
+            if top_scorers:
+                lines.append("- Top postseason scorers:")
+                for p in top_scorers[:8]:
+                    lines.append(
+                        f"  - {p['name']} ({p['team']}): {p['goals']}G {p['assists']}A "
+                        f"{p['points']}P in {p['games']} GP ({p['ppg']:.2f} PPG)"
+                    )
+            hottest = overview.get("hottest_teams") or []
+            if hottest:
+                lines.append("- Hottest teams (playoff record):")
+                for t in hottest[:6]:
+                    lines.append(
+                        f"  - {t['team']}: {t['wins']}-{t['losses']} "
+                        f"(goal diff {t['goal_diff']:+d})"
+                    )
+            lines.append("")
+
+        # Deep dive on each active series - powers questions like "who wins
+        # CAR-MTL?" and "which conference final participant will win the Cup?"
+        # We fetch the comprehensive series detail (per-team scorers, goalies,
+        # next-game model picks) for each in-progress series.
+        for s in active_series:
+            try:
+                detail = await get_series_detail(db, s["team_a"], s["team_b"])
+            except Exception:
+                continue
+            sd = detail.get("series")
+            if not sd:
+                continue
+            lines.append(
+                f"**{sd['team_a']} vs {sd['team_b']} - detailed**  "
+                f"({sd['team_a_wins']}-{sd['team_b_wins']}, {sd['status']})"
+            )
+            # Games played so far
+            for g in sd.get("games", []):
+                if g.get("is_completed") and g.get("winner"):
+                    lines.append(
+                        f"  - {g['game_date']}: {g['home_team']} {g['home_score']}, "
+                        f"{g['away_team']} {g['away_score']} ({g['winner']} won)"
+                    )
+                elif not g.get("is_completed"):
+                    lines.append(
+                        f"  - {g['game_date']}: {g['home_team']} vs {g['away_team']} "
+                        f"({g.get('state') or 'scheduled'})"
+                    )
+            # Top scorers per team in the series
+            for team_abbrev, scorers in (sd.get("top_scorers") or {}).items():
+                if not scorers:
+                    continue
+                top_line = ", ".join(
+                    f"{p['name']} {p['points']}P ({p['goals']}G)"
+                    for p in scorers[:3]
+                )
+                lines.append(f"  - {team_abbrev} top scorers in series: {top_line}")
+            # Goalies
+            for team_abbrev, goalies in (sd.get("goalies") or {}).items():
+                if not goalies:
+                    continue
+                gline_parts = []
+                for g in goalies[:2]:
+                    sv = f"{g['save_pct']:.3f}" if g.get("save_pct") is not None else "?"
+                    gaa = f"{g['gaa']:.2f}" if g.get("gaa") is not None else "?"
+                    gline_parts.append(
+                        f"{g['name']} ({sv} SV%, {gaa} GAA, {g['wins']}-{g['losses']})"
+                    )
+                lines.append(f"  - {team_abbrev} goalies: " + ", ".join(gline_parts))
+            # Next-game model picks
+            picks = sd.get("next_game_picks") or []
+            if picks:
+                lines.append("  - Model picks for next game:")
+                for p in picks[:3]:
+                    lines.append(
+                        f"    {p['rank']}. {p['player_name']} ({p['team']}): "
+                        f"{p['market']} @ {round(p['probability'] * 100)}% ({p['confidence']})"
+                    )
+            lines.append("")
+
+        return "\n".join(lines).strip()
 
     async def _fetch_predictions(
         self,
