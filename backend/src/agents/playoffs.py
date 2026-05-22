@@ -350,7 +350,15 @@ async def get_playoff_bracket(
         # historical context, not part of the active bracket view.
         if status == "complete" and s["last_game_date"]:
             days_since = (today - s["last_game_date"]).days
-            if days_since > 21:
+            if days_since > 28:
+                continue
+
+        # Drop orphan series: in_progress with no scheduled next game AND
+        # last completed game is more than a week old. These are series
+        # we have partial data for (e.g. the keep-alive lapsed mid-round
+        # and we never picked up games 3-7), not anything fans care about.
+        if status == "in_progress" and not s["next_game_date"]:
+            if s["last_game_date"] and (today - s["last_game_date"]).days > 7:
                 continue
 
         # Serialize dates
