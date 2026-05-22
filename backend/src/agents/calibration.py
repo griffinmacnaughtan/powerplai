@@ -47,10 +47,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 logger = structlog.get_logger()
 
 
-# Calibration window. 30 days = roughly one round of playoffs or ~5
-# weeks of regular-season slates - enough sample to be meaningful
-# without baking in stale model versions.
-WINDOW_DAYS = 30
+# Calibration window. Primary: 60 days - covers a typical playoff run
+# plus a few weeks of regular season, which gives a healthy sample
+# without baking in months of stale model versions. If 60 days doesn't
+# clear MIN_SAMPLE_FOR_CALIBRATION we expand adaptively up to MAX_WINDOW.
+WINDOW_DAYS = 60
+MAX_WINDOW_DAYS = 180
 
 # Refresh the calibration snapshot every 6 hours. The underlying audit
 # data only refreshes overnight, so this is plenty fresh.
@@ -256,24 +258,39 @@ def _derive_thresholds(buckets: list[CalibrationBucket]) -> tuple[float, float, 
 
 
 async def _compute(db: AsyncSession) -> CalibrationState:
-    """Pull validated audit rows and compute the calibration snapshot."""
-    end = date.today()
-    start = end - timedelta(days=WINDOW_DAYS)
+    """Pull validated audit rows and compute the calibration snapshot.
 
-    try:
-        result = await db.execute(
-            text("""
-                SELECT prob_goal, prob_point, goal_hit, point_hit
-                FROM prediction_audit
-                WHERE game_date BETWEEN :start AND :end
-                  AND validated_at IS NOT NULL
-            """),
-            {"start": start, "end": end},
-        )
-        rows = result.fetchall()
-    except Exception as e:
-        logger.warning("calibration_audit_query_failed", error=str(e))
-        rows = []
+    Adaptive window: starts at WINDOW_DAYS. If that yields fewer than
+    MIN_SAMPLE_FOR_CALIBRATION rows, widens the window in 30-day steps
+    up to MAX_WINDOW_DAYS. Keeps us calibrated through sparse-prediction
+    periods (e.g. between regular season and playoffs) without baking
+    in indefinitely-old data when we have a fresh sample.
+    """
+    end = date.today()
+    rows = []
+    window_days_used = WINDOW_DAYS
+
+    for window_days in range(WINDOW_DAYS, MAX_WINDOW_DAYS + 1, 30):
+        start = end - timedelta(days=window_days)
+        try:
+            result = await db.execute(
+                text("""
+                    SELECT prob_goal, prob_point, goal_hit, point_hit
+                    FROM prediction_audit
+                    WHERE game_date BETWEEN :start AND :end
+                      AND validated_at IS NOT NULL
+                      AND goal_hit IS NOT NULL
+                """),
+                {"start": start, "end": end},
+            )
+            rows = result.fetchall()
+            window_days_used = window_days
+        except Exception as e:
+            logger.warning("calibration_audit_query_failed", window=window_days, error=str(e))
+            rows = []
+            break
+        if len(rows) >= MIN_SAMPLE_FOR_CALIBRATION:
+            break
 
     goal_pairs: list[tuple[float, bool]] = [(r.prob_goal, r.goal_hit) for r in rows]
     point_pairs: list[tuple[float, bool]] = [(r.prob_point, r.point_hit) for r in rows]
@@ -290,7 +307,7 @@ async def _compute(db: AsyncSession) -> CalibrationState:
         high_t, med_t, fallback = LEGACY_HIGH_THRESHOLD, LEGACY_MEDIUM_THRESHOLD, True
 
     state = CalibrationState(
-        window_days=WINDOW_DAYS,
+        window_days=window_days_used,
         sample_size=sample,
         brier_goal=brier_goal,
         brier_point=brier_point,
