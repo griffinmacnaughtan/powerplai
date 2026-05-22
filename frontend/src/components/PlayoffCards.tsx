@@ -2,20 +2,15 @@
 
 import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
-import { Trophy, Swords, Flame, TrendingUp, Target, Check, X, Calendar } from 'lucide-react'
+import { Trophy, Flame, TrendingUp, Calendar } from 'lucide-react'
 import { api } from '@/lib/api'
+import type { BracketSeries, ConferenceBracket } from '@/lib/api'
+import { BracketDiagram } from './BracketDiagram'
+import { LockedPicksCard, type LockedPick } from './LockedPicksCard'
 
-type Series = {
-  team_a: string
-  team_b: string
-  team_a_wins: number
-  team_b_wins: number
-  games_played: number
-  status: 'in_progress' | 'scheduled' | 'complete'
-  winner: string | null
-  next_game_date: string | null
-  next_game_time: string | null
-}
+// Series shape from the bracket endpoint. Kept narrow here; the
+// BracketDiagram component uses the richer BracketSeries from api.ts.
+type Series = BracketSeries
 
 type TopScorer = {
   player_id: number
@@ -179,10 +174,27 @@ function BracketSkeleton() {
   )
 }
 
+// Empty conference bracket - used when bracket_view isn't yet populated
+// (cold start, or pre-postseason).
+const EMPTY_CONF: ConferenceBracket = {
+  round_1: [],
+  round_2: [],
+  conference_final: null,
+  champion: null,
+}
+
 export function PlayoffCards() {
   const [active, setActive] = useState<boolean | null>(null)
   const [loading, setLoading] = useState(true)
-  const [bracket, setBracket] = useState<{ round: number; series: Series[] } | null>(null)
+  const [bracket, setBracket] = useState<{
+    round: number
+    series: Series[]
+    view: {
+      championship: BracketSeries | null
+      east: ConferenceBracket
+      west: ConferenceBracket
+    } | null
+  } | null>(null)
   const [overview, setOverview] = useState<{
     games_completed: number
     avg_goals_per_game: number
@@ -228,7 +240,18 @@ export function PlayoffCards() {
       ])
       if (cancelled) return
 
-      if (b) setBracket({ round: b.round, series: b.series })
+      if (b)
+        setBracket({
+          round: b.round,
+          series: b.series,
+          view: b.bracket_view
+            ? {
+                championship: b.bracket_view.championship,
+                east: b.bracket_view.east,
+                west: b.bracket_view.west,
+              }
+            : null,
+        })
       if (o)
         setOverview({
           games_completed: o.games_completed,
@@ -261,17 +284,28 @@ export function PlayoffCards() {
   // "Live" series means at least one is in_progress and we have boxscore data.
   const liveSeriesCount =
     bracket?.series.filter(s => s.status === 'in_progress').length ?? 0
-  const completedSeries = bracket?.series.filter(s => s.status === 'complete').length ?? 0
-  const totalSeries = bracket?.series.length ?? 0
+
+  // Use the structured bracket_view if present; otherwise show empty
+  // conferences (BracketDiagram handles all empty/TBD states).
+  const view = bracket?.view ?? {
+    championship: null,
+    east: EMPTY_CONF,
+    west: EMPTY_CONF,
+  }
+
+  // Cast picks to the LockedPick shape - lock_status, start_time_utc etc.
+  // are optional on the Pick type and the LockedPicksCard tolerates missing.
+  const lockedPicks: LockedPick[] = picks as unknown as LockedPick[]
 
   return (
     <motion.div
       initial={{ y: 20, opacity: 0 }}
       animate={{ y: 0, opacity: 1 }}
       transition={{ delay: 0.42 }}
-      className="w-full max-w-4xl mb-4"
+      className="w-full max-w-6xl mb-4 space-y-3"
     >
-      <div className="flex items-center gap-2 justify-center mb-3">
+      {/* Section heading */}
+      <div className="flex items-center gap-2 justify-center">
         <Trophy className="w-4 h-4 text-amber-500" />
         <span className="text-xs font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400">
           Stanley Cup Playoffs · {roundLabel}
@@ -284,42 +318,56 @@ export function PlayoffCards() {
         )}
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-        {/* Bracket card */}
-        <div className="rounded-2xl border border-border bg-surface shadow-card p-4 flex flex-col">
-          <div className="flex items-center gap-2 mb-3">
-            <Swords className="w-4 h-4 text-primary dark:text-ice" />
-            <p className="text-xs font-semibold text-text-primary uppercase tracking-wider">
-              Bracket
-            </p>
-            <span className="ml-auto text-[10px] text-text-muted">
-              {totalSeries > 0
-                ? completedSeries > 0
-                  ? `${completedSeries}/${totalSeries} done`
-                  : `${totalSeries} series`
-                : ''}
-            </span>
-          </div>
-          <div className="space-y-0 flex-1 overflow-y-auto max-h-[280px] pr-1 -mr-1">
-            {bracket && bracket.series.length > 0 ? (
-              // Show all currently-relevant series. The backend already
-              // filters out ghosts/orphans and keeps only the last ~28
-              // days of completed series, so this is bounded.
-              bracket.series.map(s => (
-                <SeriesRow key={`${s.team_a}-${s.team_b}`} s={s} />
-              ))
-            ) : (
-              <p className="text-xs text-text-muted italic">Waiting on next round matchups…</p>
-            )}
-          </div>
+      {/* Tournament bracket diagram - the hero element on the page */}
+      <BracketDiagram
+        championship={view.championship}
+        east={view.east}
+        west={view.west}
+      />
+
+      {/* Locked picks + overview row */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+        {/* Tonight's picks (with 2h lock-in treatment) - takes 2/3 width */}
+        <div className="lg:col-span-2">
+          <LockedPicksCard picks={lockedPicks} fallbackNextGameDate={nextGameDate} />
+          {record && record.graded > 0 && (
+            <div className="mt-2 flex items-center justify-between rounded-lg bg-surface/60 border border-border/60 px-3 py-2 text-xs">
+              <div className="flex items-center gap-2 text-text-secondary">
+                <Flame
+                  className={`w-3.5 h-3.5 ${
+                    record.streak && record.streak.kind === 'hit'
+                      ? 'text-amber-500'
+                      : 'text-text-muted'
+                  }`}
+                />
+                <span>
+                  Model record · last 30 days:{' '}
+                  <span className="font-mono tabular-nums font-semibold text-text-primary">
+                    {record.hits}-{record.misses}
+                  </span>
+                  {record.hit_rate !== null && (
+                    <span className="text-text-muted">
+                      {' '}
+                      · {Math.round(record.hit_rate * 100)}% hit rate
+                    </span>
+                  )}
+                </span>
+              </div>
+              {record.streak && record.streak.length >= 2 && (
+                <span className="text-[10px] uppercase tracking-wider text-text-muted">
+                  {record.streak.length}-pick {record.streak.kind} streak
+                </span>
+              )}
+            </div>
+          )}
         </div>
 
-        {/* Overview card */}
+        {/* Overview card - takes 1/3 width */}
         <div className="rounded-2xl border border-border bg-surface shadow-card p-4 flex flex-col">
           <div className="flex items-center gap-2 mb-3">
             <TrendingUp className="w-4 h-4 text-primary dark:text-ice" />
             <p className="text-xs font-semibold text-text-primary uppercase tracking-wider">
-              Overview
+              Postseason Pulse
             </p>
           </div>
           {overview ? (
@@ -341,7 +389,7 @@ export function PlayoffCards() {
               <div>
                 <p className="text-[10px] text-text-muted uppercase mb-1">Top scorers</p>
                 <div className="space-y-1">
-                  {overview.top_scorers.slice(0, 4).map(p => (
+                  {overview.top_scorers.slice(0, 5).map(p => (
                     <div key={p.player_id} className="flex items-center justify-between text-xs">
                       <span className="truncate text-text-primary font-medium">{p.name}</span>
                       <span className="text-text-muted font-mono tabular-nums flex-shrink-0 ml-2">
@@ -367,94 +415,6 @@ export function PlayoffCards() {
             </div>
           ) : (
             <p className="text-xs text-text-muted italic">Loading…</p>
-          )}
-        </div>
-
-        {/* Tonight's 3 picks + record card */}
-        <div className="rounded-2xl border border-border bg-surface shadow-card p-4 flex flex-col">
-          <div className="flex items-center gap-2 mb-3">
-            <Target className="w-4 h-4 text-amber-500" />
-            <p className="text-xs font-semibold text-text-primary uppercase tracking-wider">
-              Tonight's Picks
-            </p>
-            {record && record.graded > 0 ? (
-              <span className="ml-auto text-[10px] font-mono tabular-nums text-text-muted">
-                {record.hits}-{record.misses}
-                {record.hit_rate !== null && ` · ${Math.round(record.hit_rate * 100)}%`}
-              </span>
-            ) : (
-              <span className="ml-auto text-[10px] text-text-muted">no grades yet</span>
-            )}
-          </div>
-          <div className="space-y-2 flex-1">
-            {picks.length > 0 ? (
-              picks.slice(0, 3).map(p => (
-                <div
-                  key={p.rank}
-                  className="flex items-center gap-2 py-1.5 border-b border-border/50 last:border-0"
-                >
-                  <span className="text-[10px] font-bold text-text-muted w-4 tabular-nums">
-                    {p.rank}
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-xs font-semibold text-text-primary truncate">
-                      {p.player_name}
-                    </p>
-                    <p className="text-[10px] text-text-muted truncate">
-                      {p.team} {p.is_home ? 'vs' : '@'} {p.opponent} · {p.line}
-                    </p>
-                  </div>
-                  <div className="flex-shrink-0 text-right flex items-center gap-1.5">
-                    <div>
-                      <p className="text-xs font-bold text-primary dark:text-ice tabular-nums">
-                        {Math.round(p.probability * 100)}%
-                      </p>
-                      <p className="text-[9px] uppercase tracking-wide text-text-muted">
-                        {p.confidence}
-                      </p>
-                    </div>
-                    {p.graded && p.hit === true && (
-                      <Check
-                        className="w-4 h-4 text-green-500 flex-shrink-0"
-                        aria-label="Pick hit"
-                        role="img"
-                      />
-                    )}
-                    {p.graded && p.hit === false && (
-                      <X
-                        className="w-4 h-4 text-red-500 flex-shrink-0"
-                        aria-label="Pick missed"
-                        role="img"
-                      />
-                    )}
-                  </div>
-                </div>
-              ))
-            ) : (
-              <div className="flex items-start gap-1.5 text-xs text-text-muted italic">
-                <Calendar className="w-3 h-3 mt-0.5 flex-shrink-0" />
-                <span>
-                  {nextGameDate
-                    ? `Picks lock in ~30 min before puck drop ${formatGameDate(
-                        nextGameDate,
-                        null,
-                      )}`
-                    : 'No games tonight — back when the next round drops'}
-                </span>
-              </div>
-            )}
-          </div>
-          {record && record.streak && record.streak.length >= 2 && (
-            <div className="mt-2 pt-2 border-t border-border/50 flex items-center gap-1.5">
-              <Flame
-                className={`w-3 h-3 ${
-                  record.streak.kind === 'hit' ? 'text-amber-500' : 'text-text-muted'
-                }`}
-              />
-              <span className="text-[10px] text-text-muted">
-                {record.streak.length}-pick {record.streak.kind} streak
-              </span>
-            </div>
           )}
         </div>
       </div>

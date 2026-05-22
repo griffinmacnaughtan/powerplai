@@ -13,6 +13,30 @@ export type ApiOutcome<T> =
   | { ok: true; data: T }
   | { ok: false; reason: 'offline' | 'server_error' | 'timeout'; status?: number; message?: string }
 
+export type BracketSeries = {
+  team_a: string
+  team_b: string
+  team_a_wins: number
+  team_b_wins: number
+  games_played: number
+  status: 'in_progress' | 'scheduled' | 'complete'
+  winner: string | null
+  next_game_date: string | null
+  next_game_time: string | null
+  last_game_date?: string | null
+  conference?: 'east' | 'west' | null
+  round?: 1 | 2 | 3 | 4 | null
+}
+
+export type ConferenceBracket = {
+  round_1: BracketSeries[]
+  round_2: BracketSeries[]
+  conference_final: BracketSeries | null
+  champion: string | null
+}
+
+export type PickLockStatus = 'open' | 'locking_soon' | 'locked' | 'live' | 'final'
+
 /**
  * Tiny fetch wrapper used by the new ApiOutcome helpers. Adds:
  *  - a 15s timeout (most reads should be sub-second; 15s is generous for
@@ -463,17 +487,12 @@ class PowerplAIAPI {
   async getPlayoffBracket(): Promise<{
     season: string | null
     round: number
-    series: Array<{
-      team_a: string
-      team_b: string
-      team_a_wins: number
-      team_b_wins: number
-      games_played: number
-      status: 'in_progress' | 'scheduled' | 'complete'
-      winner: string | null
-      next_game_date: string | null
-      next_game_time: string | null
-    }>
+    series: Array<BracketSeries>
+    bracket_view?: {
+      championship: BracketSeries | null
+      east: ConferenceBracket
+      west: ConferenceBracket
+    }
   }> {
     try {
       const r = await fetch(`${this.baseUrl}/api/playoffs/bracket`)
@@ -587,6 +606,13 @@ class PowerplAIAPI {
       actual_assists: number | null
       actual_points: number | null
       graded: boolean
+      start_time_utc?: string | null
+      lock_time_utc?: string | null
+      lock_lead_minutes?: number
+      minutes_to_lock?: number | null
+      minutes_to_puck_drop?: number | null
+      lock_status?: PickLockStatus
+      game_state?: string | null
     }>
   }> {
     const empty = { date: game_date ?? '', count: 0, picks: [] }
