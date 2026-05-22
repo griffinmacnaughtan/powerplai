@@ -3047,23 +3047,71 @@ async def get_playoff_picks_for_date(
     game_date: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """Persisted top-3 playoff picks for a date (defaults to today)."""
-    from datetime import date as _date
+    """
+    Persisted top-3 playoff picks for a date (defaults to today).
+
+    Each pick is enriched with:
+    - start_time_utc: when the underlying game is scheduled to drop puck
+    - lock_time_utc:  when the pick is considered "locked" (2h before puck drop)
+    - lock_status:    "open" | "locking_soon" | "locked" | "live" | "final"
+    - minutes_to_lock / minutes_to_puck_drop for UI countdown
+    The frontend uses these to render the prominent "2h before puck drop"
+    locked-pick treatment on the homepage.
+    """
+    from datetime import date as _date, datetime as _dt, timezone as _tz
     d = _date.fromisoformat(game_date) if game_date else _date.today()
     res = await db.execute(
         text("""
-            SELECT game_date, rank, player_name, team, opponent, is_home,
-                   market, line, probability, prob_goal, prob_point,
-                   confidence, opponent_goalie, hit, actual_goals,
-                   actual_assists, actual_points, validated_at
-            FROM playoff_picks
-            WHERE game_date = :d
-            ORDER BY rank ASC
+            SELECT pp.game_date, pp.rank, pp.player_name, pp.team, pp.opponent, pp.is_home,
+                   pp.market, pp.line, pp.probability, pp.prob_goal, pp.prob_point,
+                   pp.confidence, pp.opponent_goalie, pp.hit, pp.actual_goals,
+                   pp.actual_assists, pp.actual_points, pp.validated_at,
+                   pp.game_id,
+                   g.start_time_utc, g.game_state, g.is_completed
+            FROM playoff_picks pp
+            LEFT JOIN games g ON g.nhl_game_id = pp.game_id
+            WHERE pp.game_date = :d
+            ORDER BY pp.rank ASC
         """),
         {"d": d},
     )
-    picks = [
-        {
+
+    LOCK_LEAD_MINUTES = 120  # picks "lock in" 2h before puck drop
+    now_utc = _dt.now(_tz.utc).replace(tzinfo=None)
+    picks: list[dict] = []
+    for r in res.fetchall():
+        start = r.start_time_utc
+        lock_time = (start - timedelta(minutes=LOCK_LEAD_MINUTES)) if start else None
+        minutes_to_lock = (
+            (lock_time - now_utc).total_seconds() / 60.0
+            if lock_time else None
+        )
+        minutes_to_puck = (
+            (start - now_utc).total_seconds() / 60.0
+            if start else None
+        )
+
+        # Compute lock status. "live" and "final" come from the game's own
+        # state (most authoritative), then we use the clock for everything
+        # before puck drop.
+        if r.is_completed or (r.game_state or "").upper() in ("FINAL", "OFF"):
+            lock_status = "final"
+        elif (r.game_state or "").upper() in ("LIVE", "CRIT"):
+            lock_status = "live"
+        elif minutes_to_puck is None:
+            lock_status = "open"
+        elif minutes_to_puck <= 0:
+            # Game past start time but no LIVE state yet - treat as live for UX
+            lock_status = "live"
+        elif minutes_to_lock is None or minutes_to_lock <= 0:
+            # Within the 2h lock window
+            lock_status = "locked"
+        elif minutes_to_lock <= 30:
+            lock_status = "locking_soon"
+        else:
+            lock_status = "open"
+
+        picks.append({
             "date": r.game_date.isoformat(),
             "rank": int(r.rank),
             "player_name": r.player_name,
@@ -3082,9 +3130,14 @@ async def get_playoff_picks_for_date(
             "actual_assists": r.actual_assists,
             "actual_points": r.actual_points,
             "graded": r.validated_at is not None,
-        }
-        for r in res.fetchall()
-    ]
+            "start_time_utc": start.isoformat() if start else None,
+            "lock_time_utc": lock_time.isoformat() if lock_time else None,
+            "lock_lead_minutes": LOCK_LEAD_MINUTES,
+            "minutes_to_lock": round(minutes_to_lock, 1) if minutes_to_lock is not None else None,
+            "minutes_to_puck_drop": round(minutes_to_puck, 1) if minutes_to_puck is not None else None,
+            "lock_status": lock_status,
+            "game_state": r.game_state,
+        })
     return {"date": d.isoformat(), "picks": picks, "count": len(picks)}
 
 

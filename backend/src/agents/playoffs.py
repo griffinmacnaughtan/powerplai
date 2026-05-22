@@ -28,6 +28,62 @@ PLAYOFF_GAME_TYPE = 3
 REGULAR_GAME_TYPE = 2
 
 
+# NHL conference assignment (stable across seasons modulo expansion).
+# Used by the bracket view to lay teams out East/West.
+EAST_TEAMS = {
+    # Atlantic
+    "BOS", "BUF", "DET", "FLA", "MTL", "OTT", "TBL", "TOR",
+    # Metropolitan
+    "CAR", "CBJ", "NJD", "NYI", "NYR", "PHI", "PIT", "WSH",
+}
+WEST_TEAMS = {
+    # Central
+    "CHI", "COL", "DAL", "MIN", "NSH", "STL", "UTA", "WPG",
+    # Pacific
+    "ANA", "CGY", "EDM", "LAK", "SJS", "SEA", "VAN", "VGK",
+}
+
+
+def team_conference(team_abbrev: str | None) -> str | None:
+    """Return 'east' / 'west' / None for a team abbreviation."""
+    if not team_abbrev:
+        return None
+    if team_abbrev in EAST_TEAMS:
+        return "east"
+    if team_abbrev in WEST_TEAMS:
+        return "west"
+    return None
+
+
+def parse_playoff_round(nhl_game_id: int | str | None) -> int | None:
+    """
+    Parse the round number (1-4) out of an NHL playoff game ID.
+
+    NHL playoff game IDs follow the pattern SSSS03RRMG:
+        SSSS - season starting year (e.g. 2025)
+        03   - game type (playoffs)
+        RR   - round number, zero-padded ("01" .. "04")
+        M    - matchup index within the round (1..8 round 1, 1..4 round 2, etc.)
+        G    - game number within the series (1..7)
+
+    e.g. 2025030322 -> round 3 (Conference Finals), matchup 2, game 2.
+
+    Returns None when the ID is missing or malformed.
+    """
+    if nhl_game_id is None:
+        return None
+    s = str(nhl_game_id)
+    if len(s) < 8 or s[4:6] != "03":
+        return None
+    try:
+        round_num = int(s[6:8])
+    except ValueError:
+        return None
+    if round_num not in (1, 2, 3, 4):
+        return None
+    return round_num
+
+
 # ── Nightly picks schema ─────────────────────────────────────────────────────
 PICKS_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS playoff_picks (
@@ -294,6 +350,15 @@ async def get_playoff_bracket(
         if _is_ghost(g):
             continue
         key = _series_key(g["home_team_abbrev"], g["away_team_abbrev"])
+        # Conference assignment from team_a (both teams in a series are
+        # always in the same conference until the Stanley Cup Final).
+        conf_a = team_conference(key[0])
+        conf_b = team_conference(key[1])
+        # SCF is the only inter-conference series; mark it explicitly.
+        is_inter_conference = conf_a and conf_b and conf_a != conf_b
+        series_conference = None if is_inter_conference else (conf_a or conf_b)
+        # Round inferred from the playoff game ID format
+        series_round = parse_playoff_round(g.get("nhl_game_id"))
         s = series_map.setdefault(
             key,
             {
@@ -307,8 +372,14 @@ async def get_playoff_bracket(
                 "winner": None,
                 "next_game_date": None,
                 "next_game_time": None,
+                "conference": series_conference,
+                "round": series_round,
             },
         )
+        # Refine round if we hadn't gotten one from the first game (rare,
+        # but possible for partial data).
+        if s["round"] is None and series_round is not None:
+            s["round"] = series_round
         s["games_total"] += 1
 
         completed = g["is_completed"] or g["game_state"] in ("FINAL", "OFF")
@@ -430,7 +501,46 @@ async def get_playoff_bracket(
     # and complete_count somehow gives floor=1.
     n = active_count if active_count > 0 else complete_count  # noqa: F841 - kept for telemetry context
 
-    return {"season": season, "round": current_round, "series": out_series}
+    # Structured bracket view: series grouped by conference + round, ready
+    # for a tournament-tree UI. Each slot is either a populated series or
+    # None (showing the round hasn't filled yet). Stanley Cup Final lives
+    # at top level because it's inter-conference.
+    def _slot(series_list: list[dict], wanted_round: int, wanted_conf: str | None) -> list[dict]:
+        return [
+            s for s in series_list
+            if s.get("round") == wanted_round and s.get("conference") == wanted_conf
+        ]
+
+    def _conf_champion(round1_complete: list[dict], conf_final: list[dict]) -> str | None:
+        if conf_final and conf_final[0].get("winner"):
+            return conf_final[0]["winner"]
+        return None
+
+    scf_series_list = _slot(out_series, 4, None)
+    east_conf_final = _slot(out_series, 3, "east")
+    west_conf_final = _slot(out_series, 3, "west")
+    bracket_view = {
+        "championship": scf_series_list[0] if scf_series_list else None,
+        "east": {
+            "round_1": _slot(out_series, 1, "east"),
+            "round_2": _slot(out_series, 2, "east"),
+            "conference_final": east_conf_final[0] if east_conf_final else None,
+            "champion": _conf_champion([], east_conf_final),
+        },
+        "west": {
+            "round_1": _slot(out_series, 1, "west"),
+            "round_2": _slot(out_series, 2, "west"),
+            "conference_final": west_conf_final[0] if west_conf_final else None,
+            "champion": _conf_champion([], west_conf_final),
+        },
+    }
+
+    return {
+        "season": season,
+        "round": current_round,
+        "series": out_series,
+        "bracket_view": bracket_view,
+    }
 
 
 async def get_playoff_overview(
