@@ -374,27 +374,16 @@ export function BracketDiagram({ championship, east, west }: Props) {
           <ConferenceColumn side="west" title="Western Conference" champion={westChamp} bracket={west} onOpen={onOpen} />
         </div>
 
-        {/* Mobile: collapsed view with the most-relevant slice first */}
-        <div className="md:hidden space-y-4">
-          <div>
-            <p className="text-xs font-bold uppercase tracking-wider text-text-primary mb-2">
-              Eastern Conference{eastChamp && (
-                <span className="ml-1 text-primary dark:text-ice">· {eastChamp}</span>
-              )}
-            </p>
-            <MobileBracketSlice bracket={east} onOpen={onOpen} />
-          </div>
-          <div className="flex justify-center">
-            <ChampionshipNode s={championship} eastChamp={eastChamp} westChamp={westChamp} onOpen={onOpen} />
-          </div>
-          <div>
-            <p className="text-xs font-bold uppercase tracking-wider text-text-primary mb-2">
-              Western Conference{westChamp && (
-                <span className="ml-1 text-primary dark:text-ice">· {westChamp}</span>
-              )}
-            </p>
-            <MobileBracketSlice bracket={west} onOpen={onOpen} />
-          </div>
+        {/* Mobile: proper vertical tournament bracket (East | West, R1 -> SCF) */}
+        <div className="md:hidden">
+          <MobileVerticalBracket
+            east={east}
+            west={west}
+            championship={championship}
+            eastChamp={eastChamp}
+            westChamp={westChamp}
+            onOpen={onOpen}
+          />
         </div>
       </motion.div>
       <SeriesDetailModal series={selected} onClose={() => setSelected(null)} />
@@ -403,46 +392,181 @@ export function BracketDiagram({ championship, east, west }: Props) {
 }
 
 /**
- * Mobile collapsed bracket: shows Conf Final + R2 + R1 vertically. We
- * lead with the latest round so a fan opening the page on a phone sees
- * the most-recent matchup at the top instead of having to scroll past
- * round 1 to find the live series.
+ * MobileVerticalBracket — proper tournament tree for phone-class viewports
+ * (designed for iPhone 13's 390px wide and up; falls back gracefully to
+ * any narrower or wider mobile/small-tablet screen).
+ *
+ * Layout (top to bottom):
+ *
+ *                 ROUND 1
+ *     ┌───────────┐    ┌───────────┐
+ *     │ East R1   │    │ West R1   │   4 series each conference
+ *     │ ...       │    │ ...       │
+ *     └─────┬─────┘    └─────┬─────┘
+ *           ▼                ▼
+ *                 ROUND 2
+ *     ┌───────────┐    ┌───────────┐
+ *     │ East R2   │    │ West R2   │   2 series each conference
+ *     └─────┬─────┘    └─────┬─────┘
+ *           ▼                ▼
+ *             CONFERENCE FINALS
+ *     ┌───────────┐    ┌───────────┐
+ *     │ East CF   │    │ West CF   │
+ *     └─────┬─────┘    └─────┬─────┘
+ *            ╲              ╱
+ *             ╲            ╱
+ *           STANLEY CUP FINAL
+ *               ┌────────┐
+ *               │   …    │
+ *               └────────┘
+ *
+ * The 2-column East|West grid keeps the bracket recognisable as a
+ * tournament tree on a narrow screen. Round dividers + small chevron
+ * indicators between rounds give a sense of progression. The SCF is a
+ * single full-width card at the bottom so it lands as the visual
+ * climax of the scroll.
+ *
+ * Why these breakpoints
+ * - Outer container is `md:hidden` (< 768px) so this view fires on all
+ *   phone widths and small portrait tablets, while iPad-class screens
+ *   and desktops keep the existing layouts.
+ * - The 2-col grid uses `gap-2` for iPhone 13 (390px) and tightens up
+ *   automatically: each column is ~165px, plenty for a series card
+ *   ("MTL  4-3  TBL won" with badge).
  */
-function MobileBracketSlice({ bracket, onOpen }: { bracket: ConferenceBracket; onOpen?: OpenSeriesFn }) {
+function MobileVerticalBracket({
+  east,
+  west,
+  championship,
+  eastChamp,
+  westChamp,
+  onOpen,
+}: {
+  east: ConferenceBracket
+  west: ConferenceBracket
+  championship: BracketSeries | null
+  eastChamp: string | null
+  westChamp: string | null
+  onOpen?: OpenSeriesFn
+}) {
+  // Pad each round to its expected slot count so two conferences stay
+  // aligned even when matchups are still TBD.
+  const padded = <T extends BracketSeries | null>(arr: (T | undefined)[], n: number): (BracketSeries | null)[] =>
+    Array.from({ length: n }, (_, i) => arr[i] ?? null)
+
+  const eastR1 = padded(east.round_1, 4)
+  const westR1 = padded(west.round_1, 4)
+  const eastR2 = padded(east.round_2, 2)
+  const westR2 = padded(west.round_2, 2)
+  const eastCF = east.conference_final
+  const westCF = west.conference_final
+
   return (
-    <div className="space-y-2">
-      {bracket.conference_final && (
-        <div>
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted mb-1">
-            Conference Final
-          </p>
-          <SeriesNode s={bracket.conference_final} onOpen={onOpen} />
+    <div className="space-y-3">
+      {/* Conference column headers row */}
+      <div className="grid grid-cols-2 gap-2 px-1">
+        <p className="text-[10px] font-bold uppercase tracking-wider text-text-primary">
+          East{eastChamp && (
+            <span className="ml-1 text-primary dark:text-ice">· {eastChamp}</span>
+          )}
+        </p>
+        <p className="text-[10px] font-bold uppercase tracking-wider text-text-primary text-right">
+          {westChamp && (
+            <span className="mr-1 text-primary dark:text-ice">{westChamp} ·</span>
+          )}
+          West
+        </p>
+      </div>
+
+      {/* Round 1 */}
+      <RoundBlock label="Round 1">
+        <div className="grid grid-cols-2 gap-2">
+          <ColumnStack series={eastR1} onOpen={onOpen} />
+          <ColumnStack series={westR1} onOpen={onOpen} />
         </div>
-      )}
-      {bracket.round_2.length > 0 && (
-        <div>
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted mb-1">
-            Round 2
-          </p>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-            {bracket.round_2.map((s, i) => (
-              <SeriesNode key={`${s.team_a}-${s.team_b}-${i}`} s={s} onOpen={onOpen} />
-            ))}
-          </div>
+      </RoundBlock>
+
+      <RoundConnector />
+
+      {/* Round 2 */}
+      <RoundBlock label="Round 2">
+        <div className="grid grid-cols-2 gap-2">
+          <ColumnStack series={eastR2} onOpen={onOpen} />
+          <ColumnStack series={westR2} onOpen={onOpen} />
         </div>
-      )}
-      {bracket.round_1.length > 0 && (
-        <div>
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted mb-1">
-            Round 1
-          </p>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-            {bracket.round_1.map((s, i) => (
-              <SeriesNode key={`${s.team_a}-${s.team_b}-${i}`} s={s} onOpen={onOpen} />
-            ))}
-          </div>
+      </RoundBlock>
+
+      <RoundConnector />
+
+      {/* Conference Finals */}
+      <RoundBlock label="Conference Finals">
+        <div className="grid grid-cols-2 gap-2">
+          <ColumnStack series={[eastCF]} onOpen={onOpen} />
+          <ColumnStack series={[westCF]} onOpen={onOpen} />
         </div>
-      )}
+      </RoundBlock>
+
+      {/* Connector tapering from two columns into one */}
+      <div aria-hidden="true" className="relative h-5 flex items-center justify-center">
+        <div className="absolute inset-x-[25%] top-0 h-3 border-t border-l border-r border-border/60 rounded-t-md" />
+        <div className="absolute left-1/2 top-3 w-px h-2 bg-border/60" />
+      </div>
+
+      {/* Stanley Cup Final */}
+      <div className="flex justify-center">
+        <ChampionshipNode
+          s={championship}
+          eastChamp={eastChamp}
+          westChamp={westChamp}
+          onOpen={onOpen}
+        />
+      </div>
+    </div>
+  )
+}
+
+function RoundBlock({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <section>
+      <div className="flex items-center gap-2 mb-1.5">
+        <div className="flex-1 h-px bg-border/60" />
+        <p className="text-[10px] font-bold uppercase tracking-wider text-text-muted px-1">
+          {label}
+        </p>
+        <div className="flex-1 h-px bg-border/60" />
+      </div>
+      {children}
+    </section>
+  )
+}
+
+/** A vertical column of series cards (one per round per conference). */
+function ColumnStack({
+  series,
+  onOpen,
+}: {
+  series: (BracketSeries | null)[]
+  onOpen?: OpenSeriesFn
+}) {
+  return (
+    <div className="space-y-1.5 min-w-0">
+      {series.map((s, i) => (
+        <SeriesNode key={i} s={s} onOpen={onOpen} />
+      ))}
+    </div>
+  )
+}
+
+/** Decorative vertical-flow indicator between rounds. */
+function RoundConnector() {
+  return (
+    <div aria-hidden="true" className="grid grid-cols-2 gap-2">
+      <div className="flex justify-center">
+        <div className="w-px h-3 bg-border/60" />
+      </div>
+      <div className="flex justify-center">
+        <div className="w-px h-3 bg-border/60" />
+      </div>
     </div>
   )
 }
