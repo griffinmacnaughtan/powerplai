@@ -88,6 +88,42 @@ export type SeriesDetailPick = {
   opponent_goalie: string | null
 }
 
+export type DiagnosticsCalibrationBucket = {
+  range: string
+  n: number
+  hits: number
+  actual_rate: number
+  expected_rate: number
+  error: number
+}
+
+export type ModelDiagnostics = {
+  migrations: Record<string, { ok: boolean; critical: boolean; error?: string }>
+  league_averages: {
+    save_pct: number
+    gaa: number
+    goals_per_game: number
+    season: string | null
+    sample_size_goalies: number
+    sample_size_teams: number
+    is_fallback: boolean
+    age_seconds: number
+  }
+  calibration: {
+    window_days: number
+    sample_size: number
+    thresholds: { high: number; medium: number; is_fallback: boolean }
+    brier: {
+      goal: number | null
+      point: number | null
+      interpretation: string
+    }
+    goal_buckets: DiagnosticsCalibrationBucket[]
+    point_buckets: DiagnosticsCalibrationBucket[]
+    age_seconds: number | null
+  }
+}
+
 export type SeriesDetail = {
   season: string | null
   series: {
@@ -572,6 +608,16 @@ class PowerplAIAPI {
       return r.json()
     } catch {
       return { season: null, round: 0, series: [] }
+    }
+  }
+
+  async getModelDiagnostics(): Promise<ModelDiagnostics | null> {
+    try {
+      const r = await fetch(`${this.baseUrl}/api/model/diagnostics`)
+      if (!r.ok) return null
+      return r.json()
+    } catch {
+      return null
     }
   }
 

@@ -17,6 +17,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Lock, Target, Check, X, Radio, Hourglass } from 'lucide-react'
 import type { PickLockStatus } from '@/lib/api'
+import { CalibrationPopover } from './CalibrationPopover'
 
 export type LockedPick = {
   rank: number
@@ -339,9 +340,7 @@ export function LockedPicksCard({
           intervalMinutes={recalibrationIntervalMinutes}
           frozen={frozen}
         />
-        <span className="text-right">
-          Calibrated to actual hit rates
-        </span>
+        <CalibrationPopover />
       </div>
     </motion.div>
   )
