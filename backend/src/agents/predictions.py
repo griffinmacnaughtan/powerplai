@@ -70,7 +70,10 @@ MIN_GAMES_RECENT = 3
 MIN_GAMES_SEASON = 10
 MIN_GAMES_H2H = 3
 
-# League averages for normalization
+# League averages for normalization. These are FALLBACKS only - the
+# prediction engine reads the active values from
+# backend.src.agents.league_context at runtime so they stay current
+# season-over-season. Kept here so any legacy import paths still resolve.
 LEAGUE_AVG_SAVE_PCT = 0.905
 LEAGUE_AVG_GAA = 3.00
 LEAGUE_AVG_GOALS_PER_GAME = 3.10  # Per team
@@ -476,8 +479,15 @@ class PredictionEngine:
         active weights shift to PLAYOFF_WEIGHTS.
         """
         import math
+        from backend.src.agents.league_context import get_league_averages
         factors = []
         active_weights = PLAYOFF_WEIGHTS if is_playoff else WEIGHTS
+
+        # Pull the season-current league averages once per prediction. Cached
+        # for 6h inside league_context, so this is effectively free.
+        league = await get_league_averages(db)
+        live_avg_save_pct = league.save_pct
+        live_avg_goals_per_game = league.goals_per_game
 
         # 1. Get recent form (last 5 games)
         recent = await self._get_recent_form(db, player_id, game_date, n_games=5)
@@ -526,8 +536,10 @@ class PredictionEngine:
 
                 if opponent_goalie_sv_pct:
                     # Calculate adjustment: negative for good goalies, positive for weak goalies
-                    # Each 0.01 difference in save % = ~0.05 PPG adjustment
-                    sv_diff = LEAGUE_AVG_SAVE_PCT - opponent_goalie_sv_pct
+                    # Each 0.01 difference in save % = ~0.05 PPG adjustment.
+                    # league.save_pct is recomputed each season from goalie_stats
+                    # so this stays current as save percentages drift.
+                    sv_diff = live_avg_save_pct - opponent_goalie_sv_pct
                     goalie_adjustment = sv_diff * 5.0  # Scale factor
 
                     if sv_diff > 0.01:
@@ -540,8 +552,10 @@ class PredictionEngine:
 
         if matchup_context:
             expected_total = matchup_context.get("expected_total_goals", 6.0)
-            # Average game is ~6.2 total goals (2 teams * 3.1 per team)
-            league_avg_total = LEAGUE_AVG_GOALS_PER_GAME * 2
+            # Average game = 2 * league per-team goals-per-game (the value
+            # is recomputed each season from team_season_stats so we don't
+            # drift over the years - e.g. 2024-25 ran hotter than 2022-23).
+            league_avg_total = live_avg_goals_per_game * 2
             pace_diff = expected_total - league_avg_total
 
             # Each 0.5 goals above/below average = ~0.05 PPG adjustment
@@ -625,25 +639,34 @@ class PredictionEngine:
         prob_point = 1 - math.exp(-expected_points) if expected_points > 0 else 0.1
         prob_multi_point = 1 - math.exp(-expected_points) - expected_points * math.exp(-expected_points) if expected_points > 0 else 0.02
 
+        # Calibrate the raw Poisson probabilities against actual hit rates
+        # from prediction_audit. When the audit table has at least
+        # MIN_SAMPLE_FOR_CALIBRATION validated rows in the last 30 days,
+        # this maps e.g. a raw 0.42 prob_goal whose empirical bucket hit
+        # rate is 0.36 to a calibrated 0.36 - much closer to truth.
+        from backend.src.agents.calibration import get_calibration_state
+        calibration = await get_calibration_state(db)
+        prob_goal = calibration.calibrate_prob(prob_goal, "goal")
+        prob_point = calibration.calibrate_prob(prob_point, "point")
+
         # Calculate confidence from prediction strength + data quality
         games_analyzed = (recent.get("games", 0) + season.get("games", 0) + h2h.get("games", 0))
         data_quality = min(1.0, games_analyzed / 50)
 
         # Confidence reflects how strong the prediction signal is:
-        # - High prob_goal with solid data = high confidence
+        # - High calibrated prob_goal with solid data = high confidence
         # - Low prob_goal or thin data = lower confidence
         confidence_score = prob_goal * 0.7 + data_quality * 0.3
         if matchup_context and matchup_context.get("home_goalie") and matchup_context.get("away_goalie"):
             confidence_score = min(1.0, confidence_score + 0.05)
 
-        if confidence_score >= 0.30:
-            confidence = "high"
-        elif confidence_score >= 0.18:
-            confidence = "medium"
-        else:
-            confidence = "low"
-            if data_quality < 0.4:
-                factors.append("Limited data - prediction less reliable")
+        # Confidence label uses calibrated thresholds: the prob_goal cut
+        # points at which the historical bucket hit rate first crosses
+        # 0.45 / 0.25. Falls back to the legacy 0.30 / 0.18 cuts when the
+        # audit sample is too small to be trustworthy.
+        confidence = calibration.label_confidence(prob_goal)
+        if confidence == "low" and data_quality < 0.4:
+            factors.append("Limited data - prediction less reliable")
 
         return PlayerPrediction(
             player_name=player_name,

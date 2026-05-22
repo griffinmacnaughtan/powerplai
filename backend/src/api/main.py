@@ -113,56 +113,99 @@ async def run_startup_updates():
         _auto_update_running = False
 
 
+# Tracks per-table migration outcomes so /health can report degraded state
+# instead of pretending everything is fine when a table failed to init.
+# Keys are migration names; values are dicts {ok: bool, error: str?, critical: bool}.
+_migration_state: dict[str, dict] = {}
+
+
+async def _run_migration(
+    name: str,
+    coro_factory,
+    critical: bool = False,
+) -> bool:
+    """
+    Run a single startup migration, recording outcome to _migration_state.
+
+    Returns True on success, False otherwise. When critical=True and the
+    migration fails, the failure is logged at ERROR level (vs WARNING for
+    optional ones) and surfaces in the /health response so an operator
+    can notice immediately - no more silent "audit_table_init_failed"
+    that makes every audit endpoint silently 500.
+    """
+    try:
+        await coro_factory()
+        _migration_state[name] = {"ok": True, "critical": critical}
+        return True
+    except Exception as e:
+        msg = str(e)
+        _migration_state[name] = {"ok": False, "critical": critical, "error": msg}
+        if critical:
+            logger.error("critical_migration_failed", name=name, error=msg)
+        else:
+            logger.warning("optional_migration_failed", name=name, error=msg)
+        return False
+
+
+async def _create_user_feedback_table():
+    async with async_session_maker() as session:
+        await session.execute(text("""
+            CREATE TABLE IF NOT EXISTS user_feedback (
+                id SERIAL PRIMARY KEY,
+                created_at TIMESTAMP DEFAULT NOW(),
+                query_type VARCHAR(50),
+                feedback_type VARCHAR(20) NOT NULL,
+                category VARCHAR(50),
+                comment TEXT,
+                response_preview TEXT
+            )
+        """))
+        await session.commit()
+
+
+async def _create_audit_table():
+    from backend.src.agents.prediction_audit import create_audit_table
+    async with async_session_maker() as db:
+        await create_audit_table(db)
+
+
+async def _create_parlay_table():
+    from backend.src.agents.parlay_tracker import create_parlay_table
+    async with async_session_maker() as db:
+        await create_parlay_table(db)
+
+
+async def _create_playoff_picks_table():
+    from backend.src.agents.playoffs import create_playoff_picks_table
+    async with async_session_maker() as db:
+        await create_playoff_picks_table(db)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown events."""
     logger.info("starting_powerplai_api")
 
-    # Run database migrations (ensure tables exist)
+    # Critical: the core schema. If this fails we cannot serve anything
+    # meaningful, so let the exception bubble up - Railway will restart
+    # and surface the failure rather than serving a broken API.
     from backend.src.db.migrations import run_migrations
     await run_migrations()
+    _migration_state["core_schema"] = {"ok": True, "critical": True}
 
-    # Create user_feedback table if it doesn't exist
-    try:
-        async with async_session_maker() as session:
-            await session.execute(text("""
-                CREATE TABLE IF NOT EXISTS user_feedback (
-                    id SERIAL PRIMARY KEY,
-                    created_at TIMESTAMP DEFAULT NOW(),
-                    query_type VARCHAR(50),
-                    feedback_type VARCHAR(20) NOT NULL,
-                    category VARCHAR(50),
-                    comment TEXT,
-                    response_preview TEXT
-                )
-            """))
-            await session.commit()
-    except Exception as e:
-        logger.warning("feedback_table_create_failed", error=str(e))
+    # prediction_audit is critical for /api/audit/* endpoints, the
+    # calibration system, and the parlay validator. We mark it critical
+    # so /health flips to degraded if it failed - matches the actual
+    # impact, rather than the old behaviour where every audit endpoint
+    # silently 500'd with no startup warning.
+    await _run_migration("prediction_audit", _create_audit_table, critical=True)
 
-    # Create prediction_audit table if it doesn't exist
-    try:
-        async with async_session_maker() as db:
-            from backend.src.agents.prediction_audit import create_audit_table
-            await create_audit_table(db)
-    except Exception as e:
-        logger.warning("audit_table_init_failed", error=str(e))
-
-    # Create parlay tracker table if it doesn't exist
-    try:
-        async with async_session_maker() as db:
-            from backend.src.agents.parlay_tracker import create_parlay_table
-            await create_parlay_table(db)
-    except Exception as e:
-        logger.warning("parlay_table_init_failed", error=str(e))
-
-    # Create playoff picks tracking table
-    try:
-        async with async_session_maker() as db:
-            from backend.src.agents.playoffs import create_playoff_picks_table
-            await create_playoff_picks_table(db)
-    except Exception as e:
-        logger.warning("playoff_picks_table_init_failed", error=str(e))
+    # The rest are optional in the sense that the app can still answer
+    # basic stat/prediction queries without them. We still want them to
+    # exist - just don't crash startup if they fail.
+    await _run_migration("user_feedback", _create_user_feedback_table, critical=False)
+    await _run_migration("daily_parlays", _create_parlay_table, critical=False)
+    await _run_migration("playoff_picks", _create_playoff_picks_table, critical=False)
 
     # Run startup updates in background (don't block startup)
     # This includes: schedule refresh, game log catch-up, injuries, team/goalie stats
@@ -290,7 +333,36 @@ class DocumentRequest(BaseModel):
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint."""
+    """
+    Health check endpoint.
+
+    Returns "healthy" when all critical startup migrations succeeded and
+    "degraded" when one or more failed. Railway uses this for restart
+    decisions, and operators can tell at a glance whether the backend
+    is fully operational without reading logs.
+    """
+    failed_critical = [
+        name for name, st in _migration_state.items()
+        if st.get("critical") and not st.get("ok")
+    ]
+    failed_optional = [
+        name for name, st in _migration_state.items()
+        if not st.get("critical") and not st.get("ok")
+    ]
+
+    if failed_critical:
+        return {
+            "status": "degraded",
+            "service": "powerplai",
+            "failed_critical_migrations": failed_critical,
+            "failed_optional_migrations": failed_optional,
+        }
+    if failed_optional:
+        return {
+            "status": "healthy",
+            "service": "powerplai",
+            "warnings": {"failed_optional_migrations": failed_optional},
+        }
     return {"status": "healthy", "service": "powerplai"}
 
 
@@ -298,6 +370,54 @@ async def health_check():
 async def ping():
     """Simple ping endpoint for testing connectivity."""
     return {"pong": True, "timestamp": datetime.now().isoformat()}
+
+
+@app.get("/api/model/diagnostics")
+async def model_diagnostics(db: AsyncSession = Depends(get_db)):
+    """
+    Single-pane diagnostic view of the prediction system's runtime state.
+
+    Surfaces:
+    - Migration state (which startup tables succeeded / failed)
+    - League-average constants currently in use (saved %, GAA, goals/game)
+    - Calibration snapshot (Brier scores, sample size, confidence thresholds,
+      per-bucket hit rates)
+
+    Use this to verify the model is actually using fresh, calibrated values
+    instead of hardcoded fallbacks - if `thresholds.is_fallback` is true,
+    we don't yet have enough audit data to calibrate against, and the
+    "high/medium/low" labels are using the legacy fixed cuts.
+    """
+    from backend.src.agents.league_context import get_league_averages
+    from backend.src.agents.calibration import get_calibration_state
+
+    league = await get_league_averages(db)
+    calibration = await get_calibration_state(db)
+
+    return {
+        "migrations": _migration_state,
+        "league_averages": league.to_dict(),
+        "calibration": calibration.to_dict(),
+    }
+
+
+@app.post("/api/model/diagnostics/refresh")
+@limiter.limit("3/minute")
+async def refresh_model_diagnostics(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Force refresh of both the league-average and calibration caches."""
+    from backend.src.agents.league_context import refresh_league_averages
+    from backend.src.agents.calibration import refresh_calibration_state
+
+    league = await refresh_league_averages(db)
+    calibration = await refresh_calibration_state(db)
+    return {
+        "status": "ok",
+        "league_averages": league.to_dict(),
+        "calibration": calibration.to_dict(),
+    }
 
 
 @app.post("/api/query", response_model=QueryResponse)
