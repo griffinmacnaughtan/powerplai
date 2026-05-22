@@ -19,15 +19,21 @@
  *   never get out of sync with the boxes, and don't need SVG layout
  *   math at runtime.
  */
+import { useState } from 'react'
 import { motion } from 'framer-motion'
 import { Trophy, Flame } from 'lucide-react'
 import type { BracketSeries, ConferenceBracket } from '@/lib/api'
+import { SeriesDetailModal } from './SeriesDetailModal'
 
 type Props = {
   championship: BracketSeries | null
   east: ConferenceBracket
   west: ConferenceBracket
 }
+
+// Module-level state-bridge so all SeriesNode instances can open the
+// shared modal without prop drilling through 4 levels.
+type OpenSeriesFn = (s: BracketSeries) => void
 
 const ROUND_TITLES = ['First Round', 'Second Round', 'Conference Final', 'Stanley Cup Final']
 
@@ -54,9 +60,11 @@ function ScorePill({ s }: { s: BracketSeries }) {
 function SeriesNode({
   s,
   align = 'left',
+  onOpen,
 }: {
   s: BracketSeries | null
   align?: 'left' | 'right' | 'center'
+  onOpen?: OpenSeriesFn
 }) {
   if (!s) {
     // Empty slot - keeps the bracket layout intact between rounds while
@@ -116,32 +124,62 @@ function SeriesNode({
     </div>
   )
 
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: 4 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.18 }}
-      className={`relative w-full rounded-lg border ${
-        s.status === 'in_progress'
-          ? 'border-red-400/60 dark:border-red-500/50 bg-red-500/5 dark:bg-red-500/10'
-          : completed
-            ? 'border-border/60 bg-background/60 dark:bg-surface/60'
-            : 'border-border bg-surface'
-      } shadow-sm px-2.5 py-2 space-y-1`}
-    >
+  const baseClasses = `relative w-full rounded-lg border ${
+    s.status === 'in_progress'
+      ? 'border-red-400/60 dark:border-red-500/50 bg-red-500/5 dark:bg-red-500/10'
+      : completed
+        ? 'border-border/60 bg-background/60 dark:bg-surface/60'
+        : 'border-border bg-surface'
+  } shadow-sm px-2.5 py-2 space-y-1`
+
+  const interactiveClasses = onOpen
+    ? 'cursor-pointer text-left transition-all hover:shadow-md hover:border-primary/60 dark:hover:border-ice/60 hover:-translate-y-0.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 dark:focus-visible:ring-ice/50'
+    : ''
+
+  const content = (
+    <>
       <div className="absolute -top-2 right-2">
         <ScorePill s={s} />
       </div>
       {teamARow}
       {teamBRow}
+    </>
+  )
+
+  if (onOpen) {
+    return (
+      <motion.button
+        type="button"
+        initial={{ opacity: 0, y: 4 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.18 }}
+        whileTap={{ scale: 0.985 }}
+        onClick={() => onOpen(s)}
+        aria-label={`Open details for ${s.team_a} vs ${s.team_b}`}
+        className={`${baseClasses} ${interactiveClasses}`}
+      >
+        {content}
+      </motion.button>
+    )
+  }
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 4 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.18 }}
+      className={baseClasses}
+    >
+      {content}
     </motion.div>
   )
 }
 
-function ChampionshipNode({ s, eastChamp, westChamp }: {
+function ChampionshipNode({ s, eastChamp, westChamp, onOpen }: {
   s: BracketSeries | null
   eastChamp: string | null
   westChamp: string | null
+  onOpen?: OpenSeriesFn
 }) {
   // Synthesize a placeholder series when the SCF hasn't started but
   // both conference champions are known, so fans see the upcoming
@@ -184,7 +222,7 @@ function ChampionshipNode({ s, eastChamp, westChamp }: {
                 : 'border-amber-400/60 bg-amber-50/40 dark:bg-amber-500/5'
           } shadow-lg p-3 min-w-[150px]`}
         >
-          <SeriesNode s={display} />
+          <SeriesNode s={display} onOpen={s ? onOpen : undefined} />
           {display.winner && (
             <div className="mt-2 text-center">
               <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400">
@@ -208,11 +246,13 @@ function RoundColumn({
   series,
   align,
   count,
+  onOpen,
 }: {
   title: string
   series: (BracketSeries | null)[]
   align: 'left' | 'right'
   count: number
+  onOpen?: OpenSeriesFn
 }) {
   // Pad with nulls if the round hasn't filled yet (e.g. only 2 of 4 R2 known)
   const padded = Array.from({ length: count }, (_, i) => series[i] ?? null)
@@ -229,7 +269,7 @@ function RoundColumn({
       <div className="flex flex-col justify-around gap-2 h-full min-h-[160px]">
         {padded.map((s, i) => (
           <div key={i} className="relative">
-            <SeriesNode s={s} align={align} />
+            <SeriesNode s={s} align={align} onOpen={onOpen} />
           </div>
         ))}
       </div>
@@ -242,11 +282,13 @@ function ConferenceColumn({
   title,
   champion,
   bracket,
+  onOpen,
 }: {
   side: 'east' | 'west'
   title: string
   champion: string | null
   bracket: ConferenceBracket
+  onOpen?: OpenSeriesFn
 }) {
   const align: 'left' | 'right' = side === 'east' ? 'left' : 'right'
 
@@ -269,8 +311,8 @@ function ConferenceColumn({
         )}
       </div>
       <div className={`flex gap-3 items-stretch ${align === 'right' ? 'flex-row-reverse' : ''}`}>
-        <RoundColumn title="Round 1" series={bracket.round_1} align={align} count={4} />
-        <RoundColumn title="Round 2" series={bracket.round_2} align={align} count={2} />
+        <RoundColumn title="Round 1" series={bracket.round_1} align={align} count={4} onOpen={onOpen} />
+        <RoundColumn title="Round 2" series={bracket.round_2} align={align} count={2} onOpen={onOpen} />
         <div className="flex flex-col flex-1 min-w-0">
           <p
             className={`text-[10px] font-semibold uppercase tracking-wider text-text-muted mb-2 ${
@@ -280,7 +322,7 @@ function ConferenceColumn({
             Conf. Final
           </p>
           <div className="flex flex-col justify-around gap-2 h-full min-h-[160px]">
-            <SeriesNode s={bracket.conference_final} align={align} />
+            <SeriesNode s={bracket.conference_final} align={align} onOpen={onOpen} />
           </div>
         </div>
       </div>
@@ -291,67 +333,72 @@ function ConferenceColumn({
 export function BracketDiagram({ championship, east, west }: Props) {
   const eastChamp = east.champion
   const westChamp = west.champion
+  const [selected, setSelected] = useState<BracketSeries | null>(null)
+  const onOpen: OpenSeriesFn = s => setSelected(s)
 
   return (
-    <motion.div
-      initial={{ y: 12, opacity: 0 }}
-      animate={{ y: 0, opacity: 1 }}
-      transition={{ duration: 0.35 }}
-      className="w-full rounded-2xl border border-border bg-surface shadow-card p-4 md:p-5"
-    >
-      <div className="flex items-center justify-between gap-2 mb-4">
-        <div className="flex items-center gap-2">
-          <Trophy className="w-4 h-4 text-amber-500" />
-          <p className="text-sm font-bold uppercase tracking-wider text-text-primary">
-            Tournament Bracket
+    <>
+      <motion.div
+        initial={{ y: 12, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        transition={{ duration: 0.35 }}
+        className="w-full rounded-2xl border border-border bg-surface shadow-card p-4 md:p-5"
+      >
+        <div className="flex items-center justify-between gap-2 mb-4">
+          <div className="flex items-center gap-2">
+            <Trophy className="w-4 h-4 text-amber-500" />
+            <p className="text-sm font-bold uppercase tracking-wider text-text-primary">
+              Tournament Bracket
+            </p>
+          </div>
+          <p className="text-[10px] text-text-muted hidden md:block">
+            Click a series for game-by-game detail
           </p>
         </div>
-        <p className="text-[10px] text-text-muted hidden md:block">
-          {ROUND_TITLES.join(' · ')}
-        </p>
-      </div>
 
-      {/* Desktop: full bracket with championship in the middle */}
-      <div className="hidden lg:grid lg:grid-cols-[1fr_auto_1fr] gap-4 items-center">
-        <ConferenceColumn side="east" title="Eastern Conference" champion={eastChamp} bracket={east} />
-        <div className="flex flex-col items-center justify-center min-w-[170px] px-2">
-          <ChampionshipNode s={championship} eastChamp={eastChamp} westChamp={westChamp} />
+        {/* Desktop: full bracket with championship in the middle */}
+        <div className="hidden lg:grid lg:grid-cols-[1fr_auto_1fr] gap-4 items-center">
+          <ConferenceColumn side="east" title="Eastern Conference" champion={eastChamp} bracket={east} onOpen={onOpen} />
+          <div className="flex flex-col items-center justify-center min-w-[170px] px-2">
+            <ChampionshipNode s={championship} eastChamp={eastChamp} westChamp={westChamp} onOpen={onOpen} />
+          </div>
+          <ConferenceColumn side="west" title="Western Conference" champion={westChamp} bracket={west} onOpen={onOpen} />
         </div>
-        <ConferenceColumn side="west" title="Western Conference" champion={westChamp} bracket={west} />
-      </div>
 
-      {/* Tablet: stack East -> Championship -> West */}
-      <div className="hidden md:flex lg:hidden flex-col gap-4">
-        <ConferenceColumn side="east" title="Eastern Conference" champion={eastChamp} bracket={east} />
-        <div className="self-center">
-          <ChampionshipNode s={championship} eastChamp={eastChamp} westChamp={westChamp} />
+        {/* Tablet: stack East -> Championship -> West */}
+        <div className="hidden md:flex lg:hidden flex-col gap-4">
+          <ConferenceColumn side="east" title="Eastern Conference" champion={eastChamp} bracket={east} onOpen={onOpen} />
+          <div className="self-center">
+            <ChampionshipNode s={championship} eastChamp={eastChamp} westChamp={westChamp} onOpen={onOpen} />
+          </div>
+          <ConferenceColumn side="west" title="Western Conference" champion={westChamp} bracket={west} onOpen={onOpen} />
         </div>
-        <ConferenceColumn side="west" title="Western Conference" champion={westChamp} bracket={west} />
-      </div>
 
-      {/* Mobile: collapsed view with the most-relevant slice first */}
-      <div className="md:hidden space-y-4">
-        <div>
-          <p className="text-xs font-bold uppercase tracking-wider text-text-primary mb-2">
-            Eastern Conference{eastChamp && (
-              <span className="ml-1 text-primary dark:text-ice">· {eastChamp}</span>
-            )}
-          </p>
-          <MobileBracketSlice bracket={east} />
+        {/* Mobile: collapsed view with the most-relevant slice first */}
+        <div className="md:hidden space-y-4">
+          <div>
+            <p className="text-xs font-bold uppercase tracking-wider text-text-primary mb-2">
+              Eastern Conference{eastChamp && (
+                <span className="ml-1 text-primary dark:text-ice">· {eastChamp}</span>
+              )}
+            </p>
+            <MobileBracketSlice bracket={east} onOpen={onOpen} />
+          </div>
+          <div className="flex justify-center">
+            <ChampionshipNode s={championship} eastChamp={eastChamp} westChamp={westChamp} onOpen={onOpen} />
+          </div>
+          <div>
+            <p className="text-xs font-bold uppercase tracking-wider text-text-primary mb-2">
+              Western Conference{westChamp && (
+                <span className="ml-1 text-primary dark:text-ice">· {westChamp}</span>
+              )}
+            </p>
+            <MobileBracketSlice bracket={west} onOpen={onOpen} />
+          </div>
         </div>
-        <div className="flex justify-center">
-          <ChampionshipNode s={championship} eastChamp={eastChamp} westChamp={westChamp} />
-        </div>
-        <div>
-          <p className="text-xs font-bold uppercase tracking-wider text-text-primary mb-2">
-            Western Conference{westChamp && (
-              <span className="ml-1 text-primary dark:text-ice">· {westChamp}</span>
-            )}
-          </p>
-          <MobileBracketSlice bracket={west} />
-        </div>
-      </div>
-    </motion.div>
+      </motion.div>
+      <SeriesDetailModal series={selected} onClose={() => setSelected(null)} />
+    </>
   )
 }
 
@@ -361,7 +408,7 @@ export function BracketDiagram({ championship, east, west }: Props) {
  * the most-recent matchup at the top instead of having to scroll past
  * round 1 to find the live series.
  */
-function MobileBracketSlice({ bracket }: { bracket: ConferenceBracket }) {
+function MobileBracketSlice({ bracket, onOpen }: { bracket: ConferenceBracket; onOpen?: OpenSeriesFn }) {
   return (
     <div className="space-y-2">
       {bracket.conference_final && (
@@ -369,7 +416,7 @@ function MobileBracketSlice({ bracket }: { bracket: ConferenceBracket }) {
           <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted mb-1">
             Conference Final
           </p>
-          <SeriesNode s={bracket.conference_final} />
+          <SeriesNode s={bracket.conference_final} onOpen={onOpen} />
         </div>
       )}
       {bracket.round_2.length > 0 && (
@@ -379,7 +426,7 @@ function MobileBracketSlice({ bracket }: { bracket: ConferenceBracket }) {
           </p>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             {bracket.round_2.map((s, i) => (
-              <SeriesNode key={`${s.team_a}-${s.team_b}-${i}`} s={s} />
+              <SeriesNode key={`${s.team_a}-${s.team_b}-${i}`} s={s} onOpen={onOpen} />
             ))}
           </div>
         </div>
@@ -391,7 +438,7 @@ function MobileBracketSlice({ bracket }: { bracket: ConferenceBracket }) {
           </p>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             {bracket.round_1.map((s, i) => (
-              <SeriesNode key={`${s.team_a}-${s.team_b}-${i}`} s={s} />
+              <SeriesNode key={`${s.team_a}-${s.team_b}-${i}`} s={s} onOpen={onOpen} />
             ))}
           </div>
         </div>

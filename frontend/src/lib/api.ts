@@ -37,6 +37,78 @@ export type ConferenceBracket = {
 
 export type PickLockStatus = 'open' | 'locking_soon' | 'locked' | 'live' | 'final'
 
+export type SeriesGame = {
+  game_id: number
+  game_date: string | null
+  start_time_utc: string | null
+  venue: string | null
+  state: string | null
+  home_team: string
+  away_team: string
+  home_score: number | null
+  away_score: number | null
+  winner: string | null
+  is_completed: boolean
+}
+
+export type SeriesScorer = {
+  player_id: number
+  name: string
+  position: string | null
+  games: number
+  goals: number
+  assists: number
+  points: number
+  shots: number
+  avg_toi: number | null
+  ppg: number
+}
+
+export type SeriesGoalie = {
+  name: string
+  save_pct: number | null
+  gaa: number | null
+  games_played: number
+  wins: number
+  losses: number
+}
+
+export type SeriesDetailPick = {
+  rank: number
+  player_name: string
+  team: string
+  opponent: string
+  is_home: boolean
+  market: string
+  line: string
+  probability: number
+  prob_goal: number | null
+  prob_point: number | null
+  confidence: 'high' | 'medium' | 'low'
+  opponent_goalie: string | null
+}
+
+export type SeriesDetail = {
+  season: string | null
+  series: {
+    team_a: string
+    team_b: string
+    team_a_wins: number
+    team_b_wins: number
+    games_played: number
+    leader: string | null
+    winner: string | null
+    status: 'in_progress' | 'scheduled' | 'complete'
+    round: 1 | 2 | 3 | 4 | null
+    conference: 'east' | 'west' | null
+    games: SeriesGame[]
+    next_game: SeriesGame | null
+    top_scorers: Record<string, SeriesScorer[]>
+    goalies: Record<string, SeriesGoalie[]>
+    next_game_picks: SeriesDetailPick[]
+  } | null
+}
+
 /**
  * Tiny fetch wrapper used by the new ApiOutcome helpers. Adds:
  *  - a 15s timeout (most reads should be sub-second; 15s is generous for
@@ -503,6 +575,18 @@ class PowerplAIAPI {
     }
   }
 
+  async getPlayoffSeries(team_a: string, team_b: string): Promise<SeriesDetail | null> {
+    try {
+      const r = await fetch(
+        `${this.baseUrl}/api/playoffs/series/${encodeURIComponent(team_a)}/${encodeURIComponent(team_b)}`,
+      )
+      if (!r.ok) return null
+      return r.json()
+    } catch {
+      return null
+    }
+  }
+
   async getPlayoffOverview(): Promise<{
     season: string | null
     games_completed: number
@@ -614,6 +698,11 @@ class PowerplAIAPI {
       lock_status?: PickLockStatus
       game_state?: string | null
     }>
+    picks_updated_at?: string | null
+    minutes_since_generated?: number | null
+    recalibration_interval_minutes?: number
+    lock_lead_minutes?: number
+    frozen?: boolean
   }> {
     const empty = { date: game_date ?? '', count: 0, picks: [] }
     try {

@@ -201,6 +201,9 @@ export function PlayoffCards() {
     top_scorers: TopScorer[]
   } | null>(null)
   const [picks, setPicks] = useState<Pick[]>([])
+  const [picksUpdatedAt, setPicksUpdatedAt] = useState<string | null>(null)
+  const [picksFrozen, setPicksFrozen] = useState<boolean>(false)
+  const [recalibrationInterval, setRecalibrationInterval] = useState<number>(30)
   const [record, setRecord] = useState<PickRecord | null>(null)
   const [nextGameDate, setNextGameDate] = useState<string | null>(null)
 
@@ -258,7 +261,14 @@ export function PlayoffCards() {
           avg_goals_per_game: o.avg_goals_per_game,
           top_scorers: o.top_scorers,
         })
-      if (p) setPicks(p.picks)
+      if (p) {
+        setPicks(p.picks)
+        setPicksUpdatedAt(p.picks_updated_at ?? null)
+        setPicksFrozen(Boolean(p.frozen))
+        if (p.recalibration_interval_minutes) {
+          setRecalibrationInterval(p.recalibration_interval_minutes)
+        }
+      }
       if (r)
         setRecord({
           graded: r.graded,
@@ -329,7 +339,13 @@ export function PlayoffCards() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
         {/* Tonight's picks (with 2h lock-in treatment) - takes 2/3 width */}
         <div className="lg:col-span-2">
-          <LockedPicksCard picks={lockedPicks} fallbackNextGameDate={nextGameDate} />
+          <LockedPicksCard
+            picks={lockedPicks}
+            fallbackNextGameDate={nextGameDate}
+            picksUpdatedAt={picksUpdatedAt}
+            recalibrationIntervalMinutes={recalibrationInterval}
+            frozen={picksFrozen}
+          />
           {record && record.graded > 0 && (
             <div className="mt-2 flex items-center justify-between rounded-lg bg-surface/60 border border-border/60 px-3 py-2 text-xs">
               <div className="flex items-center gap-2 text-text-secondary">

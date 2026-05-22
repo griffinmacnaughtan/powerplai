@@ -42,6 +42,12 @@ type Props = {
   picks: LockedPick[]
   /** Only used if no pick has a lock time - falls back to "no games tonight" */
   fallbackNextGameDate?: string | null
+  /** Server timestamp (ISO) of last pick regeneration. */
+  picksUpdatedAt?: string | null
+  /** How often the backend will recompute picks (minutes). */
+  recalibrationIntervalMinutes?: number
+  /** True when at least one pick has hit its lock window. */
+  frozen?: boolean
 }
 
 /** Wall-clock tick to recompute countdowns. 30s is responsive without
@@ -223,7 +229,13 @@ function PickRow({ pick }: { pick: LockedPick }) {
   )
 }
 
-export function LockedPicksCard({ picks, fallbackNextGameDate }: Props) {
+export function LockedPicksCard({
+  picks,
+  fallbackNextGameDate,
+  picksUpdatedAt,
+  recalibrationIntervalMinutes = 30,
+  frozen = false,
+}: Props) {
   // Tick to drive countdown recomputation
   useTicker(30_000)
 
@@ -321,9 +333,69 @@ export function LockedPicksCard({ picks, fallbackNextGameDate }: Props) {
         </AnimatePresence>
       </div>
 
-      <p className="mt-3 text-[10px] text-text-muted text-center">
-        Picks lock 2 hours before puck drop · model probabilities are calibrated to actual hit rates
-      </p>
+      <div className="mt-3 flex items-center justify-between gap-2 text-[10px] text-text-muted">
+        <RecalibrationStatus
+          picksUpdatedAt={picksUpdatedAt}
+          intervalMinutes={recalibrationIntervalMinutes}
+          frozen={frozen}
+        />
+        <span className="text-right">
+          Calibrated to actual hit rates
+        </span>
+      </div>
     </motion.div>
+  )
+}
+
+/**
+ * "Updated 8m ago · refreshes every 30m" style strip in the card footer.
+ *
+ * When the picks are frozen (within the 2h lock window), we surface that
+ * explicitly so users understand the model isn't changing its mind any
+ * more for those games.
+ */
+function RecalibrationStatus({
+  picksUpdatedAt,
+  intervalMinutes,
+  frozen,
+}: {
+  picksUpdatedAt?: string | null
+  intervalMinutes: number
+  frozen: boolean
+}) {
+  // 60s tick for the "updated Xm ago" string
+  useTicker(60_000)
+
+  if (!picksUpdatedAt) {
+    return (
+      <span>
+        Recalibrates every {intervalMinutes}m · locks 2h before puck drop
+      </span>
+    )
+  }
+
+  const minutesAgo = Math.max(
+    0,
+    (Date.now() - new Date(picksUpdatedAt).getTime()) / 60_000,
+  )
+  const updatedLabel =
+    minutesAgo < 1 ? 'Just updated' : `Updated ${formatCountdown(minutesAgo)} ago`
+
+  if (frozen) {
+    return (
+      <span className="flex items-center gap-1">
+        <Lock className="w-2.5 h-2.5 text-primary dark:text-ice" />
+        {updatedLabel} · frozen in 2h lock window
+      </span>
+    )
+  }
+
+  // Approximate when the next refresh tick will fire (best-effort - the
+  // scheduler runs on an interval, not a known clock-aligned time).
+  const nextInMin = Math.max(0, intervalMinutes - (minutesAgo % intervalMinutes))
+  return (
+    <span>
+      {updatedLabel} · next refresh in ~{formatCountdown(nextInMin)}
+    </span>
   )
 }
