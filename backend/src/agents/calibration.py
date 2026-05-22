@@ -225,47 +225,61 @@ def _brier_score(rows: list[tuple[float, bool]]) -> Optional[float]:
 
 def _derive_thresholds(buckets: list[CalibrationBucket]) -> tuple[float, float, bool]:
     """
-    Find the prob_goal cut points where empirical hit rate first reaches
-    each target tier. Walks from the highest bucket down so partial
-    monotonicity violations (a noisy 70-80% bucket below the 60-70%
-    bucket) don't lower the threshold.
+    Find the prob_goal cut points at which the *aggregated* historical
+    hit rate of predictions at-or-above that cut crosses each target tier.
+
+    For each candidate cut T (the lower edge of each bucket), aggregate
+    n and hits across all buckets [T, 1.0] and compute the resulting hit
+    rate. The lowest T whose aggregated rate clears MEDIUM_TARGET_HIT_RATE
+    becomes the medium threshold; the lowest T clearing HIGH_TARGET_HIT_RATE
+    becomes the high threshold.
+
+    This is much more robust than picking the lower edge of a single
+    bucket: it averages out noise from small per-bucket samples and
+    yields thresholds that actually correspond to picks hitting at
+    the claimed rate.
 
     Returns (high_threshold, medium_threshold, is_fallback).
     """
-    high: Optional[float] = None
-    medium: Optional[float] = None
-
-    # Walk high-to-low, tracking the running max of actual_rate. A bucket
-    # qualifies for a tier only if its (running-max) rate meets the target.
-    running_max = 0.0
-    for b in reversed(buckets):
-        if b.n < 3:
+    # Aggregate from a candidate cut all the way to 1.0. Walk LOW-TO-HIGH
+    # candidate cuts; for each cut, sum n and hits of buckets >= cut.
+    candidates: list[tuple[float, int, int, float]] = []  # (cut, n, hits, rate)
+    for cut_bucket in buckets:
+        cut = cut_bucket.lo
+        n = sum(b.n for b in buckets if b.lo >= cut)
+        hits = sum(b.hits for b in buckets if b.lo >= cut)
+        if n < 5:
             continue
-        running_max = max(running_max, b.actual_rate)
-        if high is None and running_max >= HIGH_TARGET_HIT_RATE:
-            high = b.lo
-        if medium is None and running_max >= MEDIUM_TARGET_HIT_RATE:
-            medium = b.lo
+        rate = hits / n
+        candidates.append((cut, n, hits, rate))
 
-    # If we couldn't find a "high" tier but DID find a "medium" tier,
-    # synthesize "high" as 1.5x the medium threshold (rounded). The
-    # alternative - falling back entirely - was masking real evidence
-    # that the model is overconfident: legacy 0.30 threshold was
-    # labeling picks "high confidence" when the bucket data showed
-    # they hit 12% of the time.
+    if not candidates:
+        return LEGACY_HIGH_THRESHOLD, LEGACY_MEDIUM_THRESHOLD, True
+
+    # Find LOWEST cut where aggregated rate >= target.
+    medium: Optional[float] = None
+    high: Optional[float] = None
+    for cut, n, hits, rate in candidates:
+        if medium is None and rate >= MEDIUM_TARGET_HIT_RATE:
+            medium = cut
+        if high is None and rate >= HIGH_TARGET_HIT_RATE:
+            high = cut
+
+    # If high never qualifies but medium does, synthesize. Capped at 0.60
+    # so we don't demand a threshold the model can't reach.
     if high is None and medium is not None:
         high = min(0.60, max(medium + 0.10, medium * 1.5))
 
     if high is None or medium is None:
         return LEGACY_HIGH_THRESHOLD, LEGACY_MEDIUM_THRESHOLD, True
 
-    # Sanity: medium <= high and both within reasonable bounds. Fall back
-    # if the data produced something absurd (very small samples can).
+    # Sanity: medium <= high, both within plausible bounds. Tiny samples
+    # in early-season conditions can still produce noise so we guard.
     if medium > high:
         medium = max(0.10, high - 0.10)
-    if high < 0.15 or high > 0.60:
+    if not (0.15 <= high <= 0.65):
         return LEGACY_HIGH_THRESHOLD, LEGACY_MEDIUM_THRESHOLD, True
-    if medium < 0.05 or medium > 0.40:
+    if not (0.05 <= medium <= 0.50):
         return LEGACY_HIGH_THRESHOLD, LEGACY_MEDIUM_THRESHOLD, True
 
     return high, medium, False
