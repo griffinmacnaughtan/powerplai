@@ -642,7 +642,22 @@ Examples:
                 )
                 playoff_rows = playoff_res.fetchall()
                 if playoff_rows:
-                    stats_text.append("\n**Current Playoff Stats** (game_type=3, this postseason):")
+                    # Look up which season these stats are from so the AI
+                    # doesn't mislabel "2025-26 Playoffs" as "2024-25".
+                    season_res = await db.execute(
+                        text("SELECT MAX(season) AS s FROM games WHERE game_type = 3")
+                    )
+                    srow = season_res.fetchone()
+                    season_code = srow.s if srow and srow.s else None
+                    season_label = ""
+                    if season_code and len(season_code) == 8:
+                        start = season_code[:4]
+                        end = season_code[6:]
+                        season_label = f" ({start}-{end})"
+                    stats_text.append(
+                        f"\n**Current Playoff Stats{season_label}** "
+                        f"(game_type=3, ongoing postseason - this is the most recent data):"
+                    )
                     for pr in playoff_rows:
                         ppg = float(pr.points) / pr.games if pr.games else 0.0
                         gpg = float(pr.goals) / pr.games if pr.games else 0.0
