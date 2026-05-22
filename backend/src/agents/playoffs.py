@@ -6,7 +6,8 @@ Provides:
 - Bracket construction from game_logs + games (team series records)
 - Per-player career playoff experience (games played, goals, assists, PPG)
 - Playoff overview: top performers, Cinderella candidates, scoring pace
-- "Most likely bets" ranked across tonight's playoff slate
+- Nightly top-3 picks, persisted and graded against actual outcomes
+- Aggregate record (hit rate, streak) that auto-updates daily
 
 The NHL marks game_type=3 as playoff games. We lean entirely on that flag
 rather than inferring from dates, so this works across seasons and is
@@ -27,6 +28,47 @@ PLAYOFF_GAME_TYPE = 3
 REGULAR_GAME_TYPE = 2
 
 
+# ── Nightly picks schema ─────────────────────────────────────────────────────
+PICKS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS playoff_picks (
+    id               SERIAL PRIMARY KEY,
+    game_date        DATE NOT NULL,
+    generated_at     TIMESTAMP DEFAULT NOW(),
+    rank             INTEGER NOT NULL,
+    player_id        INTEGER,
+    player_name      VARCHAR(255) NOT NULL,
+    team             VARCHAR(10) NOT NULL,
+    opponent         VARCHAR(10) NOT NULL,
+    is_home          BOOLEAN,
+    game_id          INTEGER,
+    market           VARCHAR(50) NOT NULL,
+    line             VARCHAR(30),
+    probability      FLOAT NOT NULL,
+    prob_goal        FLOAT,
+    prob_point       FLOAT,
+    confidence       VARCHAR(10),
+    opponent_goalie  VARCHAR(255),
+    validated_at     TIMESTAMP,
+    hit              BOOLEAN,
+    actual_goals     INTEGER,
+    actual_assists   INTEGER,
+    actual_points    INTEGER,
+    UNIQUE (game_date, rank)
+);
+
+CREATE INDEX IF NOT EXISTS idx_playoff_picks_date ON playoff_picks(game_date);
+CREATE INDEX IF NOT EXISTS idx_playoff_picks_validated ON playoff_picks(validated_at);
+"""
+
+
+async def create_playoff_picks_table(db: AsyncSession) -> None:
+    """Create the playoff_picks table if missing. Safe to call on every startup."""
+    statements = [s.strip() for s in PICKS_TABLE_SQL.split(";") if s.strip()]
+    for stmt in statements:
+        await db.execute(text(stmt))
+    await db.commit()
+
+
 @dataclass
 class PlayoffExperience:
     """Career playoff performance for a single player."""
@@ -43,10 +85,30 @@ class PlayoffExperience:
 
 
 async def is_playoffs_active(db: AsyncSession, on_date: date | None = None) -> bool:
-    """Are we currently inside NHL playoffs (any game_type=3 game scheduled in a +/- 14d window)?"""
+    """
+    Are we currently inside NHL playoffs?
+
+    Two conditions, either is sufficient:
+
+    1. There is a playoff (game_type=3) game in a generous date window
+       around `on_date` (covers normal operation: scheduled, today, just
+       completed).
+
+    2. The most recent season has at least one playoff series that is
+       neither finished nor empty - i.e. a series where neither team has
+       4 wins yet, but at least one game has been played. This is the
+       safety net that keeps the dashboard live even when our schedule
+       sync briefly lags behind the NHL API (e.g. between rounds, while
+       the next bracket is being announced).
+
+    The window in (1) is asymmetric: a long backward arm so a series that
+    just wrapped is still "active" for a day or two of dashboard tail,
+    and a forward arm long enough to span the typical 2-3 day gap
+    between rounds.
+    """
     target = on_date or date.today()
-    window_start = target - timedelta(days=7)
-    window_end = target + timedelta(days=14)
+    window_start = target - timedelta(days=10)
+    window_end = target + timedelta(days=21)
 
     result = await db.execute(
         text("""
@@ -58,7 +120,32 @@ async def is_playoffs_active(db: AsyncSession, on_date: date | None = None) -> b
         {"pt": PLAYOFF_GAME_TYPE, "start": window_start, "end": window_end},
     )
     row = result.fetchone()
-    return bool(row and row.c > 0)
+    if row and row.c > 0:
+        return True
+
+    # Safety net: an in-progress series exists in the most recent playoff
+    # season. This handles the case where the schedule sync lapsed and
+    # the most recent game in the DB is now older than the window above.
+    season = await get_current_playoff_season(db)
+    if not season:
+        return False
+
+    # Latest playoff game date for this season - if it's within the last
+    # ~30 days it almost certainly means we're still mid-postseason.
+    latest = await db.execute(
+        text("""
+            SELECT MAX(game_date) AS d
+            FROM games
+            WHERE game_type = :pt AND season = :season
+        """),
+        {"pt": PLAYOFF_GAME_TYPE, "season": season},
+    )
+    lrow = latest.fetchone()
+    if not lrow or not lrow.d:
+        return False
+
+    days_since = (target - lrow.d).days
+    return 0 <= days_since <= 30
 
 
 async def get_current_playoff_season(db: AsyncSession) -> str | None:
@@ -503,14 +590,7 @@ async def get_most_likely_playoff_bets(
 
     picks = []
     for _, p, g in ranked[:top_n]:
-        # Pick the stronger leg type based on the probabilities
-        if p.prob_goal >= 0.55:
-            market, prob, line = "Anytime Goal Scorer", p.prob_goal, "1+ Goal"
-        elif p.prob_multi_point >= 0.35:
-            market, prob, line = "2+ Points", p.prob_multi_point, "2+ Pts"
-        else:
-            market, prob, line = "Anytime Point", p.prob_point, "1+ Pt"
-
+        market, prob, line = _select_market(p)
         picks.append({
             "player_name": p.player_name,
             "team": p.team,
@@ -536,3 +616,363 @@ async def get_most_likely_playoff_bets(
         "games": len(games),
         "picks": picks,
     }
+
+
+def _select_market(p: Any) -> tuple[str, float, str]:
+    """Choose the strongest prop market from a PlayerPrediction."""
+    if p.prob_goal >= 0.55:
+        return "Anytime Goal Scorer", p.prob_goal, "1+ Goal"
+    if p.prob_multi_point >= 0.35:
+        return "2+ Points", p.prob_multi_point, "2+ Pts"
+    return "Anytime Point", p.prob_point, "1+ Pt"
+
+
+# ── Nightly top-3 generation (persisted for record tracking) ────────────────
+
+async def generate_nightly_playoff_picks(
+    db: AsyncSession,
+    target_date: date | None = None,
+    per_night: int = 3,
+) -> list[dict[str, Any]]:
+    """
+    Produce and persist the top `per_night` playoff picks for a single date.
+
+    Skips re-generation if picks already exist for that date. Safe to call
+    on a daily cron. Returns the picks written (or already present).
+    """
+    from backend.src.agents.predictions import PredictionEngine
+
+    d = target_date or date.today()
+
+    # Idempotent: skip if already generated for this date
+    existing_res = await db.execute(
+        text("SELECT rank, player_name, team, opponent, market, line, probability, prob_goal, prob_point, confidence, hit FROM playoff_picks WHERE game_date = :d ORDER BY rank"),
+        {"d": d},
+    )
+    existing = existing_res.fetchall()
+    if existing:
+        return [dict(r._mapping) for r in existing]
+
+    games = await get_tonight_playoff_games(db, d)
+    if not games:
+        return []
+
+    engine = PredictionEngine(db=db)
+    candidates: list[tuple[float, Any, dict[str, Any]]] = []
+    for g in games:
+        try:
+            matchup = await engine.get_matchup_prediction(
+                db,
+                home_team=g["home_team"],
+                away_team=g["away_team"],
+                game_date=d,
+                top_n=10,
+                is_playoff=True,
+            )
+            for p in matchup.top_scorers:
+                candidates.append((p.prob_point, p, g))
+        except Exception as e:
+            logger.warning(
+                "nightly_pick_matchup_failed",
+                home=g["home_team"], away=g["away_team"], date=str(d), error=str(e),
+            )
+
+    if not candidates:
+        return []
+
+    # Rank by prob_point with confidence as tiebreak; one leg per player
+    candidates.sort(key=lambda t: (t[0], t[1].confidence_score), reverse=True)
+    chosen: list[tuple[Any, dict[str, Any]]] = []
+    seen_players: set[int] = set()
+    for _, p, g in candidates:
+        if p.player_id in seen_players:
+            continue
+        seen_players.add(p.player_id)
+        chosen.append((p, g))
+        if len(chosen) >= per_night:
+            break
+
+    written: list[dict[str, Any]] = []
+    for rank, (p, g) in enumerate(chosen, start=1):
+        market, prob, line = _select_market(p)
+        await db.execute(
+            text("""
+                INSERT INTO playoff_picks (
+                    game_date, rank, player_id, player_name, team, opponent,
+                    is_home, game_id, market, line, probability,
+                    prob_goal, prob_point, confidence, opponent_goalie
+                ) VALUES (
+                    :game_date, :rank, :player_id, :player_name, :team, :opponent,
+                    :is_home, :game_id, :market, :line, :probability,
+                    :prob_goal, :prob_point, :confidence, :opponent_goalie
+                )
+                ON CONFLICT (game_date, rank) DO NOTHING
+            """),
+            {
+                "game_date": d,
+                "rank": rank,
+                "player_id": p.player_id,
+                "player_name": p.player_name,
+                "team": p.team,
+                "opponent": p.opponent,
+                "is_home": p.is_home,
+                "game_id": g["game_id"],
+                "market": market,
+                "line": line,
+                "probability": round(prob, 4),
+                "prob_goal": p.prob_goal,
+                "prob_point": p.prob_point,
+                "confidence": p.confidence,
+                "opponent_goalie": p.opponent_goalie,
+            },
+        )
+        written.append({
+            "rank": rank,
+            "player_name": p.player_name,
+            "team": p.team,
+            "opponent": p.opponent,
+            "market": market,
+            "line": line,
+            "probability": round(prob, 3),
+            "confidence": p.confidence,
+        })
+
+    await db.commit()
+    logger.info("playoff_picks_generated", date=str(d), count=len(written))
+    return written
+
+
+async def validate_playoff_picks(
+    db: AsyncSession,
+    target_date: date | None = None,
+) -> dict[str, Any]:
+    """
+    Grade any unvalidated picks for a date. Defaults to yesterday.
+
+    A pick "hits" when the player's actual stat meets the market threshold:
+    - Anytime Goal Scorer → goals >= 1
+    - 2+ Points           → points >= 2
+    - Anytime Point       → points >= 1
+    """
+    d = target_date or (date.today() - timedelta(days=1))
+
+    rows_res = await db.execute(
+        text("""
+            SELECT id, player_id, player_name, market
+            FROM playoff_picks
+            WHERE game_date = :d AND validated_at IS NULL
+        """),
+        {"d": d},
+    )
+    rows = rows_res.fetchall()
+    if not rows:
+        return {"validated": 0, "date": str(d)}
+
+    # Only grade once games are actually final for that date
+    completeness = await db.execute(
+        text("""
+            SELECT
+                COUNT(*) AS total,
+                COUNT(*) FILTER (WHERE is_completed) AS done
+            FROM games
+            WHERE game_date = :d AND game_type = :pt
+        """),
+        {"d": d, "pt": PLAYOFF_GAME_TYPE},
+    )
+    crow = completeness.fetchone()
+    if not crow or not crow.total or crow.done < crow.total:
+        logger.info("playoff_picks_validate_skipped_incomplete", date=str(d),
+                    done=(crow.done if crow else 0), total=(crow.total if crow else 0))
+        return {"validated": 0, "date": str(d), "reason": "games_not_final"}
+
+    validated = 0
+    for r in rows:
+        # Fetch actual line for the player on this date
+        actual_res = await db.execute(
+            text("""
+                SELECT COALESCE(SUM(goals), 0) AS g,
+                       COALESCE(SUM(assists), 0) AS a,
+                       COALESCE(SUM(points), 0) AS p
+                FROM game_logs
+                WHERE player_id = :pid AND game_date = :d
+            """),
+            {"pid": r.player_id, "d": d},
+        )
+        arow = actual_res.fetchone()
+        g = int(arow.g) if arow else 0
+        a = int(arow.a) if arow else 0
+        pts = int(arow.p) if arow else 0
+
+        if r.market == "Anytime Goal Scorer":
+            hit = g >= 1
+        elif r.market == "2+ Points":
+            hit = pts >= 2
+        elif r.market == "Anytime Point":
+            hit = pts >= 1
+        else:
+            hit = None
+
+        await db.execute(
+            text("""
+                UPDATE playoff_picks
+                SET validated_at = NOW(),
+                    hit = :hit,
+                    actual_goals = :g,
+                    actual_assists = :a,
+                    actual_points = :p
+                WHERE id = :id
+            """),
+            {"hit": hit, "g": g, "a": a, "p": pts, "id": r.id},
+        )
+        validated += 1
+
+    await db.commit()
+    logger.info("playoff_picks_validated", date=str(d), count=validated)
+    return {"validated": validated, "date": str(d)}
+
+
+async def get_playoff_pick_record(
+    db: AsyncSession,
+    days: int = 30,
+) -> dict[str, Any]:
+    """Aggregate record + streak + recent nights of picks."""
+    # Overall aggregate
+    agg_res = await db.execute(
+        text("""
+            SELECT
+                COUNT(*) FILTER (WHERE hit IS NOT NULL) AS graded,
+                COUNT(*) FILTER (WHERE hit = TRUE) AS hits,
+                COUNT(*) FILTER (WHERE hit = FALSE) AS misses,
+                COUNT(*) AS total,
+                COUNT(DISTINCT game_date) AS nights,
+                AVG(probability) FILTER (WHERE hit IS NOT NULL) AS avg_prob
+            FROM playoff_picks
+            WHERE game_date >= CURRENT_DATE - (CAST(:days AS INTEGER) * INTERVAL '1 day')
+        """),
+        {"days": days},
+    )
+    agg = agg_res.fetchone()
+
+    graded = int(agg.graded or 0)
+    hits = int(agg.hits or 0)
+    misses = int(agg.misses or 0)
+    hit_rate = round(hits / graded, 3) if graded else None
+    avg_prob = round(float(agg.avg_prob), 3) if agg and agg.avg_prob is not None else None
+
+    # Per-night record (all 3 hit = "perfect" night)
+    nights_res = await db.execute(
+        text("""
+            SELECT game_date,
+                   COUNT(*) AS picks,
+                   COUNT(*) FILTER (WHERE hit = TRUE) AS hits,
+                   COUNT(*) FILTER (WHERE hit IS NOT NULL) AS graded
+            FROM playoff_picks
+            WHERE game_date >= CURRENT_DATE - (CAST(:days AS INTEGER) * INTERVAL '1 day')
+            GROUP BY game_date
+            ORDER BY game_date DESC
+        """),
+        {"days": days},
+    )
+    nights = [
+        {
+            "date": r.game_date.isoformat(),
+            "picks": int(r.picks),
+            "hits": int(r.hits or 0),
+            "graded": int(r.graded or 0),
+        }
+        for r in nights_res.fetchall()
+    ]
+
+    # Most recent picks with grades
+    recent_res = await db.execute(
+        text("""
+            SELECT game_date, rank, player_name, team, opponent, market, line,
+                   probability, confidence, hit, actual_goals, actual_points
+            FROM playoff_picks
+            WHERE game_date >= CURRENT_DATE - (CAST(:days AS INTEGER) * INTERVAL '1 day')
+            ORDER BY game_date DESC, rank ASC
+            LIMIT 60
+        """),
+        {"days": days},
+    )
+    recent = [
+        {
+            "date": r.game_date.isoformat(),
+            "rank": int(r.rank),
+            "player_name": r.player_name,
+            "team": r.team,
+            "opponent": r.opponent,
+            "market": r.market,
+            "line": r.line,
+            "probability": round(float(r.probability), 3),
+            "confidence": r.confidence,
+            "hit": r.hit,
+            "actual_goals": r.actual_goals,
+            "actual_points": r.actual_points,
+        }
+        for r in recent_res.fetchall()
+    ]
+
+    # Streak: consecutive graded picks with the same outcome, working back from most recent
+    streak_kind: str | None = None
+    streak_len = 0
+    for p in recent:
+        if p["hit"] is None:
+            continue
+        kind = "hit" if p["hit"] else "miss"
+        if streak_kind is None:
+            streak_kind = kind
+            streak_len = 1
+        elif kind == streak_kind:
+            streak_len += 1
+        else:
+            break
+
+    return {
+        "period_days": days,
+        "total_picks": int(agg.total or 0),
+        "graded": graded,
+        "hits": hits,
+        "misses": misses,
+        "hit_rate": hit_rate,
+        "nights": nights,
+        "recent": recent,
+        "streak": {"kind": streak_kind, "length": streak_len} if streak_kind else None,
+        "avg_probability": avg_prob,
+    }
+
+
+async def generate_picks_for_upcoming_playoffs(
+    db: AsyncSession,
+    days_ahead: int = 2,
+) -> dict[str, int]:
+    """
+    Convenience wrapper used by the scheduler: generate (idempotent) picks for
+    today through today + `days_ahead` for any date that has playoff games.
+    """
+    start = date.today()
+    totals = {"dates_processed": 0, "picks_written": 0}
+    for i in range(days_ahead + 1):
+        d = start + timedelta(days=i)
+        written = await generate_nightly_playoff_picks(db, d)
+        if written:
+            totals["dates_processed"] += 1
+            totals["picks_written"] += len(written)
+    return totals
+
+
+async def validate_recent_playoff_picks(
+    db: AsyncSession,
+    days_back: int = 3,
+) -> dict[str, int]:
+    """Grade any unvalidated picks from the last `days_back` days."""
+    today = date.today()
+    totals = {"dates_validated": 0, "picks_validated": 0}
+    for i in range(1, days_back + 1):
+        d = today - timedelta(days=i)
+        res = await validate_playoff_picks(db, d)
+        v = int(res.get("validated", 0) or 0)
+        if v:
+            totals["dates_validated"] += 1
+            totals["picks_validated"] += v
+    return totals

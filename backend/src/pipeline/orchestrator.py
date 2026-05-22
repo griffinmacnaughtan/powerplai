@@ -311,25 +311,47 @@ orchestrator = PipelineOrchestrator()
 # -------------------------------------------------------------------------
 
 async def _schedule_sync_pipeline(db: AsyncSession, **kwargs) -> int:
-    """Sync game schedule from NHL API."""
+    """
+    Sync game schedule from NHL API.
+
+    Walks a backward window (to flip yesterday's "LIVE"/"FUT" rows to
+    FINAL with scores) and a forward window (to pick up newly announced
+    playoff round-2/3 series). The NHL schedule endpoint returns a full
+    week per call, so we step in 7-day strides to minimise API hits.
+    """
     from backend.src.ingestion.games import ingest_schedule_for_date
     from datetime import date, timedelta
 
     config = kwargs.get("config", PIPELINE_CONFIGS.get("schedule_sync"))
-    days_ahead = config.extra.get("days_ahead", 7) if config else 7
-    days_behind = config.extra.get("days_behind", 1) if config else 1
+    days_ahead = config.extra.get("days_ahead", 14) if config else 14
+    days_behind = config.extra.get("days_behind", 7) if config else 7
 
     total = 0
     today = date.today()
+    seen_weeks: set[date] = set()
 
-    # Sync past games (for score updates)
-    for i in range(days_behind):
+    def _bucket_for(d: date) -> date:
+        """Round to a Monday so we don't fetch the same NHL schedule week twice."""
+        return d - timedelta(days=d.weekday())
+
+    # Past window: include today AND yesterday/older. The original loop used
+    # range(days_behind) which collapsed to {today} when days_behind=1, so
+    # completed past games never got their scores updated.
+    for i in range(days_behind + 1):
         d = today - timedelta(days=i)
+        bucket = _bucket_for(d)
+        if bucket in seen_weeks:
+            continue
+        seen_weeks.add(bucket)
         total += await ingest_schedule_for_date(db, d)
 
-    # Sync upcoming games
-    for i in range(days_ahead):
+    # Forward window
+    for i in range(1, days_ahead + 1):
         d = today + timedelta(days=i)
+        bucket = _bucket_for(d)
+        if bucket in seen_weeks:
+            continue
+        seen_weeks.add(bucket)
         total += await ingest_schedule_for_date(db, d)
 
     return total
@@ -472,6 +494,45 @@ async def start_scheduler():
         run_parlay_validation,
         CronTrigger(hour=9, minute=0),
         id="parlay_validate",
+        replace_existing=True,
+    )
+
+    # Nightly playoff picks: generate today's + tomorrow's 3 picks at 14:30 UTC
+    # and grade yesterday's picks at 09:30 UTC (after overnight finals arrive).
+    async def run_playoff_picks_generation():
+        try:
+            from backend.src.db.database import async_session_maker
+            from backend.src.agents.playoffs import (
+                create_playoff_picks_table,
+                generate_picks_for_upcoming_playoffs,
+            )
+            async with async_session_maker() as db:
+                await create_playoff_picks_table(db)
+                result = await generate_picks_for_upcoming_playoffs(db, days_ahead=2)
+                logger.info("playoff_picks_generation_ran", **result)
+        except Exception as e:
+            logger.error("playoff_picks_generation_failed", error=str(e))
+
+    async def run_playoff_picks_validation():
+        try:
+            from backend.src.db.database import async_session_maker
+            from backend.src.agents.playoffs import validate_recent_playoff_picks
+            async with async_session_maker() as db:
+                result = await validate_recent_playoff_picks(db, days_back=3)
+                logger.info("playoff_picks_validation_ran", **result)
+        except Exception as e:
+            logger.error("playoff_picks_validation_failed", error=str(e))
+
+    _scheduler.add_job(
+        run_playoff_picks_generation,
+        CronTrigger(hour=14, minute=30),
+        id="playoff_picks_generate",
+        replace_existing=True,
+    )
+    _scheduler.add_job(
+        run_playoff_picks_validation,
+        CronTrigger(hour=9, minute=30),
+        id="playoff_picks_validate",
         replace_existing=True,
     )
 

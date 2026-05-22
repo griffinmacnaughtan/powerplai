@@ -389,13 +389,24 @@ class PowerplAIAPI {
     }
   }
 
-  async getPlayoffStatus(): Promise<{ is_active: boolean; season: string | null }> {
+  async getPlayoffStatus(): Promise<{
+    is_active: boolean
+    season: string | null
+    latest_game_date?: string | null
+    next_game_date?: string | null
+  }> {
+    const empty = {
+      is_active: false,
+      season: null,
+      latest_game_date: null,
+      next_game_date: null,
+    }
     try {
       const r = await fetch(`${this.baseUrl}/api/playoffs/status`)
-      if (!r.ok) return { is_active: false, season: null }
+      if (!r.ok) return empty
       return r.json()
     } catch {
-      return { is_active: false, season: null }
+      return empty
     }
   }
 
@@ -497,6 +508,87 @@ class PowerplAIAPI {
     const empty = { start_date: '', days, is_playoffs: false, games: 0, picks: [] }
     try {
       const r = await fetch(`${this.baseUrl}/api/playoffs/best-bets?days=${days}&top_n=${topN}`)
+      if (!r.ok) return empty
+      return r.json()
+    } catch {
+      return empty
+    }
+  }
+
+  async getPlayoffPicks(game_date?: string): Promise<{
+    date: string
+    count: number
+    picks: Array<{
+      date: string
+      rank: number
+      player_name: string
+      team: string
+      opponent: string
+      is_home: boolean
+      market: string
+      line: string
+      probability: number
+      prob_goal: number | null
+      prob_point: number | null
+      confidence: 'high' | 'medium' | 'low'
+      opponent_goalie: string | null
+      hit: boolean | null
+      actual_goals: number | null
+      actual_assists: number | null
+      actual_points: number | null
+      graded: boolean
+    }>
+  }> {
+    const empty = { date: game_date ?? '', count: 0, picks: [] }
+    try {
+      const qs = game_date ? `?game_date=${game_date}` : ''
+      const r = await fetch(`${this.baseUrl}/api/playoffs/picks${qs}`)
+      if (!r.ok) return empty
+      return r.json()
+    } catch {
+      return empty
+    }
+  }
+
+  async getPlayoffPickRecord(days = 30): Promise<{
+    period_days: number
+    total_picks: number
+    graded: number
+    hits: number
+    misses: number
+    hit_rate: number | null
+    avg_probability: number | null
+    streak: { kind: 'hit' | 'miss'; length: number } | null
+    nights: Array<{ date: string; picks: number; hits: number; graded: number }>
+    recent: Array<{
+      date: string
+      rank: number
+      player_name: string
+      team: string
+      opponent: string
+      market: string
+      line: string
+      probability: number
+      confidence: 'high' | 'medium' | 'low'
+      hit: boolean | null
+      actual_goals: number | null
+      actual_points: number | null
+    }>
+  }> {
+    const empty = {
+      period_days: days,
+      total_picks: 0,
+      graded: 0,
+      hits: 0,
+      misses: 0,
+      hit_rate: null,
+      avg_probability: null,
+      streak: null,
+      nights: [],
+      recent: [],
+    }
+    try {
+      const r = await fetch(`${this.baseUrl}/api/playoffs/picks/record?days=${days}`)
       if (!r.ok) return empty
       return r.json()
     } catch {

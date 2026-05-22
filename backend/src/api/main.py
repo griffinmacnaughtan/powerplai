@@ -108,6 +108,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("parlay_table_init_failed", error=str(e))
 
+    # Create playoff picks tracking table
+    try:
+        async with async_session_maker() as db:
+            from backend.src.agents.playoffs import create_playoff_picks_table
+            await create_playoff_picks_table(db)
+    except Exception as e:
+        logger.warning("playoff_picks_table_init_failed", error=str(e))
+
     # Run startup updates in background (don't block startup)
     # This includes: schedule refresh, game log catch-up, injuries, team/goalie stats
     if settings.auto_update_enabled:
@@ -2651,11 +2659,94 @@ async def trigger_parlay_generation(
 
 @app.get("/api/playoffs/status")
 async def get_playoffs_status(db: AsyncSession = Depends(get_db)):
-    """Whether playoffs are currently active and which season we're tracking."""
+    """Whether playoffs are currently active and which season we're tracking.
+
+    Also reports the most-recent and next playoff game dates in the DB so
+    the dashboard can show "data refreshed X hours ago" / "next game in
+    Y days" hints when the schedule sync is lagging.
+    """
     from backend.src.agents.playoffs import is_playoffs_active, get_current_playoff_season
+
     active = await is_playoffs_active(db)
     season = await get_current_playoff_season(db)
-    return {"is_active": active, "season": season}
+
+    latest_date: str | None = None
+    next_date: str | None = None
+    if season:
+        latest_res = await db.execute(
+            text("""
+                SELECT MAX(game_date) AS latest,
+                       MIN(CASE WHEN game_date >= CURRENT_DATE THEN game_date END) AS next_d
+                FROM games
+                WHERE game_type = 3 AND season = :season
+            """),
+            {"season": season},
+        )
+        row = latest_res.fetchone()
+        if row:
+            latest_date = row.latest.isoformat() if row.latest else None
+            next_date = row.next_d.isoformat() if row.next_d else None
+
+    return {
+        "is_active": active,
+        "season": season,
+        "latest_game_date": latest_date,
+        "next_game_date": next_date,
+    }
+
+
+@app.post("/api/playoffs/resync")
+@limiter.limit("3/minute")
+async def resync_playoffs(
+    request: Request,
+    days_back: int = 21,
+    days_ahead: int = 21,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Force a wide-window schedule resync centred on today.
+
+    Useful when round transitions land outside the normal hourly cadence
+    or to recover from a long Railway sleep. Bounded to a sensible range
+    so it can't be used to hammer the NHL API.
+    """
+    from backend.src.ingestion.games import ingest_schedule_for_date
+
+    days_back = max(0, min(days_back, 30))
+    days_ahead = max(0, min(days_ahead, 30))
+
+    today = date.today()
+    seen_weeks: set[date] = set()
+    total = 0
+
+    def _bucket(d: date) -> date:
+        return d - timedelta(days=d.weekday())
+
+    for i in range(days_back, -1, -1):
+        d = today - timedelta(days=i)
+        b = _bucket(d)
+        if b in seen_weeks:
+            continue
+        seen_weeks.add(b)
+        total += await ingest_schedule_for_date(db, d)
+
+    for i in range(1, days_ahead + 1):
+        d = today + timedelta(days=i)
+        b = _bucket(d)
+        if b in seen_weeks:
+            continue
+        seen_weeks.add(b)
+        total += await ingest_schedule_for_date(db, d)
+
+    return {
+        "status": "ok",
+        "weeks_fetched": len(seen_weeks),
+        "rows_upserted": total,
+        "window": {
+            "start": (today - timedelta(days=days_back)).isoformat(),
+            "end": (today + timedelta(days=days_ahead)).isoformat(),
+        },
+    }
 
 
 @app.get("/api/playoffs/bracket")
@@ -2717,6 +2808,87 @@ async def get_player_playoff_record(
         "gpg": exp.gpg,
         "experience_multiplier": exp.experience_multiplier,
     }
+
+
+@app.get("/api/playoffs/picks")
+async def get_playoff_picks_for_date(
+    game_date: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Persisted top-3 playoff picks for a date (defaults to today)."""
+    from datetime import date as _date
+    d = _date.fromisoformat(game_date) if game_date else _date.today()
+    res = await db.execute(
+        text("""
+            SELECT game_date, rank, player_name, team, opponent, is_home,
+                   market, line, probability, prob_goal, prob_point,
+                   confidence, opponent_goalie, hit, actual_goals,
+                   actual_assists, actual_points, validated_at
+            FROM playoff_picks
+            WHERE game_date = :d
+            ORDER BY rank ASC
+        """),
+        {"d": d},
+    )
+    picks = [
+        {
+            "date": r.game_date.isoformat(),
+            "rank": int(r.rank),
+            "player_name": r.player_name,
+            "team": r.team,
+            "opponent": r.opponent,
+            "is_home": bool(r.is_home),
+            "market": r.market,
+            "line": r.line,
+            "probability": round(float(r.probability), 3),
+            "prob_goal": round(float(r.prob_goal), 3) if r.prob_goal is not None else None,
+            "prob_point": round(float(r.prob_point), 3) if r.prob_point is not None else None,
+            "confidence": r.confidence,
+            "opponent_goalie": r.opponent_goalie,
+            "hit": r.hit,
+            "actual_goals": r.actual_goals,
+            "actual_assists": r.actual_assists,
+            "actual_points": r.actual_points,
+            "graded": r.validated_at is not None,
+        }
+        for r in res.fetchall()
+    ]
+    return {"date": d.isoformat(), "picks": picks, "count": len(picks)}
+
+
+@app.get("/api/playoffs/picks/record")
+async def get_playoff_picks_record(
+    days: int = 30,
+    db: AsyncSession = Depends(get_db),
+):
+    """Aggregate record + streak for persisted playoff picks."""
+    from backend.src.agents.playoffs import get_playoff_pick_record
+    return await get_playoff_pick_record(db, days)
+
+
+@app.post("/api/playoffs/picks/generate")
+async def trigger_playoff_picks_generate(
+    target_date: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Manual trigger: generate today's (or given date's) playoff picks."""
+    from datetime import date as _date
+    from backend.src.agents.playoffs import generate_nightly_playoff_picks
+    d = _date.fromisoformat(target_date) if target_date else _date.today()
+    written = await generate_nightly_playoff_picks(db, d)
+    return {"date": d.isoformat(), "picks": written, "count": len(written)}
+
+
+@app.post("/api/playoffs/picks/validate")
+async def trigger_playoff_picks_validate(
+    target_date: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Manual trigger: grade picks for a date (defaults to yesterday)."""
+    from datetime import date as _date, timedelta as _td
+    from backend.src.agents.playoffs import validate_playoff_picks
+    d = _date.fromisoformat(target_date) if target_date else (_date.today() - _td(days=1))
+    return await validate_playoff_picks(db, d)
 
 
 # -------------------------------------------------------------------------

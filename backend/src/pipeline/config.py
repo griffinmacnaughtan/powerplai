@@ -68,7 +68,11 @@ PIPELINE_CONFIGS: dict[str, PipelineConfig] = {
         source=DataSource.NHL_API,
         frequency=UpdateFrequency.HOURLY,
         priority=1,
-        extra={"days_ahead": 7, "days_behind": 1},
+        # days_behind covers the past N days inclusive of yesterday so completed
+        # games that flip from "LIVE"/"FUT" to "FINAL" overnight get their
+        # scores ingested. days_ahead is wide enough to catch next-round playoff
+        # series that the NHL announces 7-10 days in advance.
+        extra={"days_ahead": 14, "days_behind": 7},
     ),
     "game_logs": PipelineConfig(
         name="game_logs",

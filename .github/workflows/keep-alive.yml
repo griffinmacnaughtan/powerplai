@@ -6,24 +6,56 @@ on:
     - cron: '*/15 * * * *'
   workflow_dispatch:  # Allow manual trigger
 
+# A new ping should replace any older still-running ping rather than queue
+# behind it. Without this, a single slow cold-start could cascade into
+# overlapping runs that GitHub eventually marks "cancelled".
+concurrency:
+  group: keep-alive
+  cancel-in-progress: true
+
 jobs:
   ping:
     runs-on: ubuntu-latest
+    timeout-minutes: 3
     steps:
-      - name: Ping backend health endpoint
+      - name: Health check
+        env:
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
         run: |
-          response=$(curl -s -o /dev/null -w "%{http_code}" ${{ secrets.BACKEND_URL }}/health)
-          echo "Health check response: $response"
-          if [ "$response" != "200" ]; then
-            echo "Backend may be starting up, trying again in 30s..."
-            sleep 30
-            curl -s ${{ secrets.BACKEND_URL }}/health
+          if [ -z "$BACKEND_URL" ]; then
+            echo "BACKEND_URL secret not configured - skipping ping"
+            exit 0
           fi
+          # Up to 3 attempts with a short timeout - covers cold starts
+          # without holding the runner for minutes.
+          for attempt in 1 2 3; do
+            response=$(curl -s -o /tmp/health.json -w "%{http_code}" \
+              --max-time 30 --connect-timeout 10 \
+              "$BACKEND_URL/health" || echo "000")
+            echo "Attempt $attempt: HTTP $response"
+            cat /tmp/health.json 2>/dev/null || true
+            echo ""
+            if [ "$response" = "200" ]; then
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "::error::Backend health check failed after 3 attempts"
+          exit 1
 
-      - name: Trigger data freshness check
+      - name: Refresh today's schedule (lightweight)
+        if: success()
+        env:
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
+        # Hits a cheap, idempotent endpoint that exercises the DB and the
+        # NHL fetch path - keeps connection pools warm and pulls live
+        # scores for in-progress games. No LLM tokens involved.
         run: |
-          # Hit an endpoint that requires DB access to ensure scheduler is running
-          curl -s "${{ secrets.BACKEND_URL }}/api/chat" \
+          if [ -z "$BACKEND_URL" ]; then exit 0; fi
+          curl -s -X POST --max-time 45 --connect-timeout 10 \
+            "$BACKEND_URL/api/games/refresh" \
             -H "Content-Type: application/json" \
-            -d '{"message": "health check"}' \
-            --max-time 60 || true
+            -o /tmp/refresh.json \
+            -w "Refresh: HTTP %{http_code} in %{time_total}s\n" || true
+          head -c 500 /tmp/refresh.json 2>/dev/null || true
+          echo ""

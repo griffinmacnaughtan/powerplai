@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
-import { Trophy, Swords, Flame, TrendingUp } from 'lucide-react'
+import { Trophy, Swords, Flame, TrendingUp, Target, Check, X, Calendar } from 'lucide-react'
 import { api } from '@/lib/api'
 
 type Series = {
@@ -14,6 +14,7 @@ type Series = {
   status: 'in_progress' | 'scheduled' | 'complete'
   winner: string | null
   next_game_date: string | null
+  next_game_time: string | null
 }
 
 type TopScorer = {
@@ -27,25 +28,29 @@ type TopScorer = {
   ppg: number
 }
 
-type HotTeam = {
-  team: string
-  games: number
-  wins: number
-  losses: number
-  goal_diff: number
-}
-
 type Pick = {
+  date: string
+  rank: number
   player_name: string
   team: string
   opponent: string
   is_home: boolean
-  game_date: string
   market: string
   line: string
   probability: number
   confidence: 'high' | 'medium' | 'low'
-  opponent_goalie: string | null
+  hit: boolean | null
+  actual_goals: number | null
+  actual_points: number | null
+  graded: boolean
+}
+
+type PickRecord = {
+  graded: number
+  hits: number
+  misses: number
+  hit_rate: number | null
+  streak: { kind: 'hit' | 'miss'; length: number } | null
 }
 
 const ROUND_LABEL: Record<number, string> = {
@@ -55,23 +60,31 @@ const ROUND_LABEL: Record<number, string> = {
   4: 'Stanley Cup Final',
 }
 
-function formatShortDate(iso: string): string {
-  if (!iso) return ''
-  const [y, m, d] = iso.split('-').map(Number)
-  if (!y || !m || !d) return iso
-  const target = new Date(y, m - 1, d)
+// Short-form date used inside the bracket rows. Always renders in the
+// viewer's local timezone so a 7pm EST puck drop reads as 7pm to a fan
+// in Toronto and 4pm to one in LA.
+function formatGameDate(iso: string | null, time: string | null): string {
+  const ref = time ?? iso
+  if (!ref) return ''
+  const d = new Date(ref)
+  if (Number.isNaN(d.getTime())) return ''
   const today = new Date()
-  today.setHours(0, 0, 0, 0)
-  const diffDays = Math.round((target.getTime() - today.getTime()) / 86_400_000)
-  if (diffDays === 0) return 'Tonight'
-  if (diffDays === 1) return 'Tomorrow'
-  return target.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })
+  const tomorrow = new Date()
+  tomorrow.setDate(today.getDate() + 1)
+  const sameDay = (a: Date, b: Date) =>
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate()
+  if (sameDay(d, today)) return time ? `Today ${d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : 'Today'
+  if (sameDay(d, tomorrow)) return time ? `Tom ${d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : 'Tomorrow'
+  return d.toLocaleDateString([], { month: 'short', day: 'numeric' })
 }
 
 function SeriesRow({ s }: { s: Series }) {
   const leader =
     s.team_a_wins > s.team_b_wins ? s.team_a : s.team_b_wins > s.team_a_wins ? s.team_b : null
   const tied = s.team_a_wins === s.team_b_wins && s.games_played > 0
+  const dateLabel = formatGameDate(s.next_game_date, s.next_game_time)
 
   return (
     <div className="flex items-center justify-between gap-2 py-1.5 border-b border-border/50 last:border-0">
@@ -100,8 +113,18 @@ function SeriesRow({ s }: { s: Series }) {
           <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-green-500/10 text-green-600 dark:text-green-400 font-semibold">
             {s.winner} won
           </span>
-        ) : tied ? (
-          <span className="text-[10px] uppercase tracking-wide text-text-muted">tied</span>
+        ) : s.status === 'in_progress' && tied ? (
+          <span className="text-[10px] uppercase tracking-wide text-amber-600 dark:text-amber-400 font-semibold">
+            tied
+          </span>
+        ) : s.status === 'in_progress' && leader ? (
+          <span className="text-[10px] uppercase tracking-wide text-primary dark:text-ice font-semibold">
+            {leader} leads
+          </span>
+        ) : s.status === 'scheduled' && dateLabel ? (
+          <span className="text-[10px] uppercase tracking-wide text-text-muted">
+            {dateLabel}
+          </span>
         ) : s.status === 'scheduled' ? (
           <span className="text-[10px] uppercase tracking-wide text-text-muted">upcoming</span>
         ) : null}
@@ -117,13 +140,10 @@ export function PlayoffCards() {
     games_completed: number
     avg_goals_per_game: number
     top_scorers: TopScorer[]
-    hottest_teams: HotTeam[]
   } | null>(null)
   const [picks, setPicks] = useState<Pick[]>([])
-  const [betsWindow, setBetsWindow] = useState<{ days: number; games: number }>({
-    days: 3,
-    games: 0,
-  })
+  const [record, setRecord] = useState<PickRecord | null>(null)
+  const [nextGameDate, setNextGameDate] = useState<string | null>(null)
 
   useEffect(() => {
     api.getPlayoffStatus().then(async s => {
@@ -132,26 +152,39 @@ export function PlayoffCards() {
         return
       }
       setActive(true)
-      const [b, o, p] = await Promise.all([
+      setNextGameDate(s.next_game_date ?? null)
+      const [b, o, p, r] = await Promise.all([
         api.getPlayoffBracket(),
         api.getPlayoffOverview(),
-        api.getPlayoffBestBets(3, 8),
+        api.getPlayoffPicks(),
+        api.getPlayoffPickRecord(30),
       ])
       setBracket({ round: b.round, series: b.series })
       setOverview({
         games_completed: o.games_completed,
         avg_goals_per_game: o.avg_goals_per_game,
         top_scorers: o.top_scorers,
-        hottest_teams: o.hottest_teams,
       })
       setPicks(p.picks)
-      setBetsWindow({ days: p.days, games: p.games })
+      setRecord({
+        graded: r.graded,
+        hits: r.hits,
+        misses: r.misses,
+        hit_rate: r.hit_rate,
+        streak: r.streak,
+      })
     })
   }, [])
 
   if (active !== true) return null
 
   const roundLabel = bracket ? ROUND_LABEL[bracket.round] ?? 'Playoffs' : 'Playoffs'
+
+  // "Live" series means at least one is in_progress and we have boxscore data.
+  const liveSeriesCount =
+    bracket?.series.filter(s => s.status === 'in_progress').length ?? 0
+  const completedSeries = bracket?.series.filter(s => s.status === 'complete').length ?? 0
+  const totalSeries = bracket?.series.length ?? 0
 
   return (
     <motion.div
@@ -165,6 +198,12 @@ export function PlayoffCards() {
         <span className="text-xs font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400">
           Stanley Cup Playoffs · {roundLabel}
         </span>
+        {liveSeriesCount > 0 && (
+          <span className="flex items-center gap-1 text-[10px] uppercase tracking-wider text-red-500 font-semibold">
+            <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
+            {liveSeriesCount} live
+          </span>
+        )}
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -176,7 +215,11 @@ export function PlayoffCards() {
               Bracket
             </p>
             <span className="ml-auto text-[10px] text-text-muted">
-              {bracket?.series.length ?? 0} series
+              {totalSeries > 0
+                ? completedSeries > 0
+                  ? `${completedSeries}/${totalSeries} done`
+                  : `${totalSeries} series`
+                : ''}
             </span>
           </div>
           <div className="space-y-0 flex-1 overflow-hidden">
@@ -185,7 +228,7 @@ export function PlayoffCards() {
                 <SeriesRow key={`${s.team_a}-${s.team_b}`} s={s} />
               ))
             ) : (
-              <p className="text-xs text-text-muted italic">Bracket syncing…</p>
+              <p className="text-xs text-text-muted italic">Waiting on next round matchups…</p>
             )}
           </div>
         </div>
@@ -225,9 +268,19 @@ export function PlayoffCards() {
                       </span>
                     </div>
                   ))}
-                  {overview.top_scorers.length === 0 && (
-                    <p className="text-xs text-text-muted italic">No boxscores yet</p>
-                  )}
+                  {overview.top_scorers.length === 0 &&
+                    (overview.games_completed === 0 ? (
+                      <div className="flex items-start gap-1.5 text-xs text-text-muted italic">
+                        <Calendar className="w-3 h-3 mt-0.5 flex-shrink-0" />
+                        <span>
+                          {nextGameDate
+                            ? `Round opens ${formatGameDate(nextGameDate, null)} — leaderboard fills in after Game 1`
+                            : 'Leaderboard fills in once Game 1 wraps'}
+                        </span>
+                      </div>
+                    ) : (
+                      <p className="text-xs text-text-muted italic">No boxscores yet</p>
+                    ))}
                 </div>
               </div>
             </div>
@@ -236,46 +289,84 @@ export function PlayoffCards() {
           )}
         </div>
 
-        {/* Best bets card */}
+        {/* Tonight's 3 picks + record card */}
         <div className="rounded-2xl border border-border bg-surface shadow-card p-4 flex flex-col">
           <div className="flex items-center gap-2 mb-3">
-            <Flame className="w-4 h-4 text-amber-500" />
+            <Target className="w-4 h-4 text-amber-500" />
             <p className="text-xs font-semibold text-text-primary uppercase tracking-wider">
-              Most Likely Bets
+              Tonight's Picks
             </p>
-            <span className="ml-auto text-[10px] text-text-muted">
-              next {betsWindow.days}d · {betsWindow.games} gm
-            </span>
+            {record && record.graded > 0 ? (
+              <span className="ml-auto text-[10px] font-mono tabular-nums text-text-muted">
+                {record.hits}-{record.misses}
+                {record.hit_rate !== null && ` · ${Math.round(record.hit_rate * 100)}%`}
+              </span>
+            ) : (
+              <span className="ml-auto text-[10px] text-text-muted">no grades yet</span>
+            )}
           </div>
           <div className="space-y-2 flex-1">
             {picks.length > 0 ? (
-              picks.slice(0, 5).map((p, i) => (
+              picks.slice(0, 3).map(p => (
                 <div
-                  key={`${p.player_name}-${i}`}
+                  key={p.rank}
                   className="flex items-center gap-2 py-1.5 border-b border-border/50 last:border-0"
                 >
+                  <span className="text-[10px] font-bold text-text-muted w-4 tabular-nums">
+                    {p.rank}
+                  </span>
                   <div className="min-w-0 flex-1">
                     <p className="text-xs font-semibold text-text-primary truncate">
                       {p.player_name}
                     </p>
                     <p className="text-[10px] text-text-muted truncate">
-                      {formatShortDate(p.game_date)} · {p.team} {p.is_home ? 'vs' : '@'} {p.opponent} · {p.line}
+                      {p.team} {p.is_home ? 'vs' : '@'} {p.opponent} · {p.line}
                     </p>
                   </div>
-                  <div className="flex-shrink-0 text-right">
-                    <p className="text-xs font-bold text-primary dark:text-ice tabular-nums">
-                      {Math.round(p.probability * 100)}%
-                    </p>
-                    <p className="text-[9px] uppercase tracking-wide text-text-muted">
-                      {p.confidence}
-                    </p>
+                  <div className="flex-shrink-0 text-right flex items-center gap-1.5">
+                    <div>
+                      <p className="text-xs font-bold text-primary dark:text-ice tabular-nums">
+                        {Math.round(p.probability * 100)}%
+                      </p>
+                      <p className="text-[9px] uppercase tracking-wide text-text-muted">
+                        {p.confidence}
+                      </p>
+                    </div>
+                    {p.graded && p.hit === true && (
+                      <Check className="w-4 h-4 text-green-500 flex-shrink-0" />
+                    )}
+                    {p.graded && p.hit === false && (
+                      <X className="w-4 h-4 text-red-500 flex-shrink-0" />
+                    )}
                   </div>
                 </div>
               ))
             ) : (
-              <p className="text-xs text-text-muted italic">No playoff games in the window</p>
+              <div className="flex items-start gap-1.5 text-xs text-text-muted italic">
+                <Calendar className="w-3 h-3 mt-0.5 flex-shrink-0" />
+                <span>
+                  {nextGameDate
+                    ? `Picks lock in ~30 min before puck drop ${formatGameDate(
+                        nextGameDate,
+                        null,
+                      )}`
+                    : 'No games tonight — back when the next round drops'}
+                </span>
+              </div>
             )}
           </div>
+          {record && record.streak && record.streak.length >= 2 && (
+            <div className="mt-2 pt-2 border-t border-border/50 flex items-center gap-1.5">
+              <Flame
+                className={`w-3 h-3 ${
+                  record.streak.kind === 'hit' ? 'text-amber-500' : 'text-text-muted'
+                }`}
+              />
+              <span className="text-[10px] text-text-muted">
+                {record.streak.length}-pick {record.streak.kind} streak
+              </span>
+            </div>
+          )}
         </div>
       </div>
     </motion.div>
