@@ -1,5 +1,55 @@
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
+/**
+ * Result type for endpoints that can fail in a way the UI needs to distinguish
+ * (e.g. network down vs server saying "no playoffs active").
+ *
+ * The existing per-method `try { } catch { return empty }` pattern collapses
+ * both into the same empty shape, making it impossible to render a "backend
+ * unreachable" toast vs "no data yet" empty state. This wrapper preserves
+ * the distinction without forcing every caller to update at once.
+ */
+export type ApiOutcome<T> =
+  | { ok: true; data: T }
+  | { ok: false; reason: 'offline' | 'server_error' | 'timeout'; status?: number; message?: string }
+
+/**
+ * Tiny fetch wrapper used by the new ApiOutcome helpers. Adds:
+ *  - a 15s timeout (most reads should be sub-second; 15s is generous for
+ *    Railway cold starts but short enough to fail fast on network issues)
+ *  - a single retry on transient 5xx with 500ms backoff
+ *  - origin-friendly error categorisation
+ */
+async function fetchWithRetry(
+  url: string,
+  init: RequestInit = {},
+  { retries = 1, timeoutMs = 15000 }: { retries?: number; timeoutMs?: number } = {},
+): Promise<Response> {
+  let lastErr: unknown
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const controller = new AbortController()
+    const t = setTimeout(() => controller.abort(), timeoutMs)
+    try {
+      const r = await fetch(url, { ...init, signal: controller.signal })
+      clearTimeout(t)
+      // Retry once on transient 5xx
+      if (r.status >= 500 && r.status < 600 && attempt < retries) {
+        await new Promise(res => setTimeout(res, 500))
+        continue
+      }
+      return r
+    } catch (e) {
+      clearTimeout(t)
+      lastErr = e
+      if (attempt < retries) {
+        await new Promise(res => setTimeout(res, 500))
+        continue
+      }
+    }
+  }
+  throw lastErr ?? new Error('fetch failed')
+}
+
 export interface ChatHistoryMessage {
   role: 'user' | 'assistant'
   content: string

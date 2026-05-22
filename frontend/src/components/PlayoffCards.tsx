@@ -63,11 +63,30 @@ const ROUND_LABEL: Record<number, string> = {
 // Short-form date used inside the bracket rows. Always renders in the
 // viewer's local timezone so a 7pm EST puck drop reads as 7pm to a fan
 // in Toronto and 4pm to one in LA.
+//
+// iOS Safari quirk: `new Date("2026-05-22")` (date-only ISO) is parsed as
+// UTC midnight, which on the US East Coast renders as "May 21, 8pm" the
+// night before. When we only have a date string (no time), parse it as a
+// local-zone calendar date instead.
 function formatGameDate(iso: string | null, time: string | null): string {
-  const ref = time ?? iso
-  if (!ref) return ''
-  const d = new Date(ref)
-  if (Number.isNaN(d.getTime())) return ''
+  let d: Date | null = null
+
+  if (time) {
+    const parsed = new Date(time)
+    if (!Number.isNaN(parsed.getTime())) d = parsed
+  }
+  if (!d && iso) {
+    // Try date-only format first
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso)
+    if (m) {
+      d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
+    } else {
+      const parsed = new Date(iso)
+      if (!Number.isNaN(parsed.getTime())) d = parsed
+    }
+  }
+  if (!d) return ''
+
   const today = new Date()
   const tomorrow = new Date()
   tomorrow.setDate(today.getDate() + 1)
@@ -75,8 +94,10 @@ function formatGameDate(iso: string | null, time: string | null): string {
     a.getFullYear() === b.getFullYear() &&
     a.getMonth() === b.getMonth() &&
     a.getDate() === b.getDate()
-  if (sameDay(d, today)) return time ? `Today ${d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : 'Today'
-  if (sameDay(d, tomorrow)) return time ? `Tom ${d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : 'Tomorrow'
+  if (sameDay(d, today))
+    return time ? `Today ${d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : 'Today'
+  if (sameDay(d, tomorrow))
+    return time ? `Tom ${d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : 'Tomorrow'
   return d.toLocaleDateString([], { month: 'short', day: 'numeric' })
 }
 
@@ -133,8 +154,34 @@ function SeriesRow({ s }: { s: Series }) {
   )
 }
 
+// Shape returned by the status check; mirrors the backend response so we
+// can also pick up next_game_date in the same trip.
+type StatusResult = Awaited<ReturnType<typeof api.getPlayoffStatus>>
+
+function BracketSkeleton() {
+  return (
+    <div className="w-full max-w-4xl mb-4 animate-pulse" aria-hidden="true">
+      <div className="h-3 w-56 mx-auto mb-3 rounded bg-border/60" />
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        {[0, 1, 2].map(i => (
+          <div key={i} className="rounded-2xl border border-border bg-surface shadow-card p-4">
+            <div className="h-3 w-24 mb-3 rounded bg-border/60" />
+            {[0, 1, 2, 3].map(j => (
+              <div key={j} className="flex items-center justify-between py-1.5">
+                <div className="h-3 w-16 rounded bg-border/40" />
+                <div className="h-3 w-10 rounded bg-border/40" />
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export function PlayoffCards() {
   const [active, setActive] = useState<boolean | null>(null)
+  const [loading, setLoading] = useState(true)
   const [bracket, setBracket] = useState<{ round: number; series: Series[] } | null>(null)
   const [overview, setOverview] = useState<{
     games_completed: number
@@ -146,36 +193,67 @@ export function PlayoffCards() {
   const [nextGameDate, setNextGameDate] = useState<string | null>(null)
 
   useEffect(() => {
-    api.getPlayoffStatus().then(async s => {
+    // Cleanup-on-unmount guard: if the user navigates away mid-fetch (or
+    // React strict-mode double-invokes the effect in dev), don't try to
+    // setState on a torn-down component.
+    let cancelled = false
+
+    async function load() {
+      let s: StatusResult
+      try {
+        s = await api.getPlayoffStatus()
+      } catch {
+        if (!cancelled) {
+          setActive(false)
+          setLoading(false)
+        }
+        return
+      }
+      if (cancelled) return
       if (!s.is_active) {
         setActive(false)
+        setLoading(false)
         return
       }
       setActive(true)
       setNextGameDate(s.next_game_date ?? null)
+
+      // Parallel-fetch the four sub-resources. Each is wrapped in its own
+      // try so one broken endpoint doesn't blank the whole section.
       const [b, o, p, r] = await Promise.all([
-        api.getPlayoffBracket(),
-        api.getPlayoffOverview(),
-        api.getPlayoffPicks(),
-        api.getPlayoffPickRecord(30),
+        api.getPlayoffBracket().catch(() => null),
+        api.getPlayoffOverview().catch(() => null),
+        api.getPlayoffPicks().catch(() => null),
+        api.getPlayoffPickRecord(30).catch(() => null),
       ])
-      setBracket({ round: b.round, series: b.series })
-      setOverview({
-        games_completed: o.games_completed,
-        avg_goals_per_game: o.avg_goals_per_game,
-        top_scorers: o.top_scorers,
-      })
-      setPicks(p.picks)
-      setRecord({
-        graded: r.graded,
-        hits: r.hits,
-        misses: r.misses,
-        hit_rate: r.hit_rate,
-        streak: r.streak,
-      })
-    })
+      if (cancelled) return
+
+      if (b) setBracket({ round: b.round, series: b.series })
+      if (o)
+        setOverview({
+          games_completed: o.games_completed,
+          avg_goals_per_game: o.avg_goals_per_game,
+          top_scorers: o.top_scorers,
+        })
+      if (p) setPicks(p.picks)
+      if (r)
+        setRecord({
+          graded: r.graded,
+          hits: r.hits,
+          misses: r.misses,
+          hit_rate: r.hit_rate,
+          streak: r.streak,
+        })
+      setLoading(false)
+    }
+
+    load()
+    return () => {
+      cancelled = true
+    }
   }, [])
 
+  if (loading) return <BracketSkeleton />
   if (active !== true) return null
 
   const roundLabel = bracket ? ROUND_LABEL[bracket.round] ?? 'Playoffs' : 'Playoffs'
@@ -222,9 +300,12 @@ export function PlayoffCards() {
                 : ''}
             </span>
           </div>
-          <div className="space-y-0 flex-1 overflow-hidden">
+          <div className="space-y-0 flex-1 overflow-y-auto max-h-[280px] pr-1 -mr-1">
             {bracket && bracket.series.length > 0 ? (
-              bracket.series.slice(0, 8).map(s => (
+              // Show all currently-relevant series. The backend already
+              // filters out ghosts/orphans and keeps only the last ~28
+              // days of completed series, so this is bounded.
+              bracket.series.map(s => (
                 <SeriesRow key={`${s.team_a}-${s.team_b}`} s={s} />
               ))
             ) : (
@@ -333,10 +414,18 @@ export function PlayoffCards() {
                       </p>
                     </div>
                     {p.graded && p.hit === true && (
-                      <Check className="w-4 h-4 text-green-500 flex-shrink-0" />
+                      <Check
+                        className="w-4 h-4 text-green-500 flex-shrink-0"
+                        aria-label="Pick hit"
+                        role="img"
+                      />
                     )}
                     {p.graded && p.hit === false && (
-                      <X className="w-4 h-4 text-red-500 flex-shrink-0" />
+                      <X
+                        className="w-4 h-4 text-red-500 flex-shrink-0"
+                        aria-label="Pick missed"
+                        role="img"
+                      />
                     )}
                   </div>
                 </div>

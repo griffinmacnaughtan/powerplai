@@ -372,9 +372,18 @@ async def get_playoff_bracket(
         del s["games_total"]
         out_series.append(s)
 
-    # Sort: in-progress first, then scheduled, then complete; then by wins descending
+    # Sort: in-progress first (drama is happening right now), then scheduled,
+    # then complete in reverse chronological order (most-recent wraps at top
+    # so a fan opening the page sees the round that just ended, not round 1).
+    # Python's sort is stable, so we do this in two passes.
     status_order = {"in_progress": 0, "scheduled": 1, "complete": 2}
-    out_series.sort(key=lambda x: (status_order[x["status"]], -(x["team_a_wins"] + x["team_b_wins"])))
+    # Pass 1: order all series by last_game_date DESC. ISO dates sort
+    # lexicographically so an empty string ("" for series with no completed
+    # games yet) falls to the bottom.
+    out_series.sort(key=lambda x: x.get("last_game_date") or "", reverse=True)
+    # Pass 2: group by status. Stable sort preserves the date order within
+    # each status bucket.
+    out_series.sort(key=lambda x: status_order[x["status"]])
 
     # Round inference. NHL bracket has 8 series in round 1, 4 in round 2,
     # 2 in conference finals, 1 in Stanley Cup Final - so once round 1
