@@ -376,22 +376,50 @@ async def get_playoff_bracket(
     status_order = {"in_progress": 0, "scheduled": 1, "complete": 2}
     out_series.sort(key=lambda x: (status_order[x["status"]], -(x["team_a_wins"] + x["team_b_wins"])))
 
-    # Round inference: count active series (anything not finished long ago).
-    # First round has 8, second 4, conference finals 2, Stanley Cup Final 1.
-    # We bias toward the latest round we have evidence of, so a few stragglers
-    # from the previous round don't keep us stuck on round_n - 1.
+    # Round inference. NHL bracket has 8 series in round 1, 4 in round 2,
+    # 2 in conference finals, 1 in Stanley Cup Final - so once round 1
+    # wraps there are 8 complete series total, after round 2 there are
+    # 12, after conference finals 14, after the Final 15.
+    #
+    # Counting complete series is the most robust signal because active
+    # series can legitimately be 1 (one Cup Final game and one conference
+    # final still wrapping) without us being in the Final yet. We use the
+    # complete count as the floor and only advance past it if the active
+    # count corroborates.
     active_count = sum(1 for s in out_series if s["status"] in ("in_progress", "scheduled"))
-    n = active_count if active_count > 0 else len(out_series)
-    if n >= 8:
-        current_round = 1
-    elif n >= 4:
-        current_round = 2
-    elif n >= 2:
-        current_round = 3
-    elif n == 1:
-        current_round = 4
+    complete_count = sum(1 for s in out_series if s["status"] == "complete")
+
+    # Floor from complete count
+    if complete_count >= 14:
+        floor_round = 4   # Stanley Cup Final
+    elif complete_count >= 12:
+        floor_round = 3   # Conference Finals
+    elif complete_count >= 8:
+        floor_round = 2   # Second Round
     else:
+        floor_round = 1   # First Round
+
+    # Ceiling from active count (don't claim a later round than active series allow)
+    if active_count >= 8:
+        ceiling_round = 1
+    elif active_count >= 4:
+        ceiling_round = 2
+    elif active_count >= 2:
+        ceiling_round = 3
+    elif active_count == 1:
+        ceiling_round = 4
+    else:
+        # No active series at all - we're between rounds or postseason is over.
+        # Use the floor only.
+        ceiling_round = floor_round
+
+    current_round = max(floor_round, ceiling_round) if active_count else floor_round
+    # When nothing has even started, report 0 so the UI can show pre-postseason copy.
+    if active_count == 0 and complete_count == 0:
         current_round = 0
+    # Suppress the silly fallback path where we no-longer-have-anything-active
+    # and complete_count somehow gives floor=1.
+    n = active_count if active_count > 0 else complete_count  # noqa: F841 - kept for telemetry context
 
     return {"season": season, "round": current_round, "series": out_series}
 

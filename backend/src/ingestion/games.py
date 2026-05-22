@@ -169,6 +169,79 @@ async def ingest_schedule_for_date(
             await client.close()
 
 
+async def ingest_team_season_schedule(
+    db: AsyncSession,
+    team_abbrev: str,
+    season: str,
+    client: NHLAPIClient | None = None,
+    game_types: tuple[int, ...] = (2, 3),
+) -> int:
+    """
+    Backfill a team's full season schedule (regular + playoffs by default).
+
+    Use this when the league-wide /schedule/{date} endpoint has dropped
+    finalized playoff series we never picked up - hitting the per-team
+    endpoint returns every game the team has been in for the season.
+
+    Returns number of rows upserted.
+    """
+    close_client = False
+    if client is None:
+        client = NHLAPIClient()
+        close_client = True
+
+    try:
+        data = await client.get_team_schedule_season(team_abbrev, season)
+        games = data.get("games", []) if isinstance(data, dict) else []
+        upserted = 0
+
+        for game_data in games:
+            gt = game_data.get("gameType", 2)
+            if gt not in game_types:
+                continue
+            game = parse_game_from_schedule(
+                game_data,
+                season,
+                day_date=game_data.get("gameDate"),  # team-season payload uses "gameDate"
+            )
+            if not game["nhl_game_id"] or not game["home_team_abbrev"]:
+                continue
+
+            await db.execute(
+                text("""
+                    INSERT INTO games (
+                        nhl_game_id, season, game_type, game_date, start_time_utc,
+                        venue, home_team_abbrev, away_team_abbrev,
+                        home_score, away_score, game_state, is_completed,
+                        created_at, updated_at
+                    ) VALUES (
+                        :nhl_game_id, :season, :game_type, :game_date, :start_time_utc,
+                        :venue, :home_team_abbrev, :away_team_abbrev,
+                        :home_score, :away_score, :game_state, :is_completed,
+                        NOW(), NOW()
+                    )
+                    ON CONFLICT (nhl_game_id) DO UPDATE SET
+                        home_score = EXCLUDED.home_score,
+                        away_score = EXCLUDED.away_score,
+                        game_state = EXCLUDED.game_state,
+                        is_completed = EXCLUDED.is_completed,
+                        updated_at = NOW()
+                """),
+                game,
+            )
+            upserted += 1
+
+        await db.commit()
+        logger.info(
+            "ingested_team_season_schedule",
+            team=team_abbrev, season=season, games=upserted,
+        )
+        return upserted
+    finally:
+        if close_client:
+            await client.close()
+
+
 async def ingest_schedule_range(
     db: AsyncSession,
     start_date: date,

@@ -100,18 +100,24 @@ class PowerplAICopilot:
         classification = await self._classify_query(user_query)
         logger.info("query_classified", query=user_query[:50], classification=classification)
 
-        # Check if conversation history has Olympic context (for follow-up questions)
+        # Check if conversation history has Olympic context (for follow-up questions).
+        # CRITICAL: Only do this while the tournament is actually active. NHL players
+        # like McDavid/Crosby/MacKinnon/Pastrnak/Necas were in the old keyword list
+        # year-round, which silently hijacked regular-season and playoff queries
+        # months after the Olympics ended.
+        from backend.src.ingestion.olympics import is_olympic_tournament_active
+
         has_olympic_context = False
         olympic_countries_in_history = []
+        # Only include unambiguously Olympic terms. Country names alone are not enough -
+        # "Canada wins the Cup" is an NHL playoff query, not an Olympic one.
         olympic_keywords = [
-            "olympic", "parlay", "switzerland", "canada vs", "milano cortina",
-            "quarterfinal", "semifinal", "medal", "gold medal",
-            "czech", "sweden", "finland", "usa vs", "germany",
-            "binnington", "hellebuyck", "genoni",  # Olympic goalies
-            "celebrini", "mcdavid", "crosby", "mackinnon",  # Canadian stars
-            "necas", "pastrnak",  # Czech stars
+            "olympic", "olympics", "milano cortina",
+            "quarterfinal", "semifinal", "gold medal", "silver medal", "bronze medal",
+            "national team", "team canada", "team usa", "team sweden",
+            "team finland", "team czech", "team switzerland",
         ]
-        if conversation_history:
+        if conversation_history and is_olympic_tournament_active():
             for msg in conversation_history:
                 content = msg.get("content", "").lower()
                 if any(word in content for word in olympic_keywords):

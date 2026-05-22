@@ -79,6 +79,25 @@ class NHLAPIClient:
             )
         return await self._get(f"{self.base_url}/club-schedule/{team_abbrev}/now")
 
+    async def get_team_schedule_season(
+        self, team_abbrev: str, season: str
+    ) -> dict[str, Any]:
+        """
+        Get a team's full-season schedule including playoffs.
+
+        This is the most reliable way to backfill playoff games once
+        round-by-round matchups are determined dynamically - the
+        league-wide /schedule/{date} endpoint sometimes drops
+        finalized series. Returns games for every round the team
+        has been in.
+
+        Endpoint: /v1/club-schedule-season/{team}/{season}
+        Season format: 20252026
+        """
+        return await self._get(
+            f"{self.base_url}/club-schedule-season/{team_abbrev}/{season}"
+        )
+
     # -------------------------------------------------------------------------
     # Game endpoints
     # -------------------------------------------------------------------------

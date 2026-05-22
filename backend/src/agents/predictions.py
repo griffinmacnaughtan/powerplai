@@ -751,7 +751,21 @@ class PredictionEngine:
         player_id: int,
         opponent: str,
     ) -> dict:
-        """Get player's head-to-head stats against opponent."""
+        """
+        Get player's head-to-head stats against opponent.
+
+        Restricted to the last two seasons of regular-season + playoff
+        game logs - older data drifts (line changes, team rebuilds,
+        the player aging) and pollutes the prediction. A 35-year-old's
+        career H2H vs BOS over 10 seasons used to silently dominate
+        the recent-form signal here.
+        """
+        from backend.src.ingestion.scheduler import get_current_season
+
+        current_year = int(get_current_season())
+        # Season codes are stored as e.g. "20252026", "20242025".
+        cutoff_season = f"{current_year - 1}{current_year}"
+
         result = await db.execute(
             text("""
                 SELECT
@@ -760,9 +774,11 @@ class PredictionEngine:
                     COALESCE(SUM(assists), 0) as assists,
                     COALESCE(SUM(points), 0) as points
                 FROM game_logs
-                WHERE player_id = :player_id AND opponent = :opponent
+                WHERE player_id = :player_id
+                  AND opponent = :opponent
+                  AND (season IS NULL OR season >= :cutoff_season)
             """),
-            {"player_id": player_id, "opponent": opponent}
+            {"player_id": player_id, "opponent": opponent, "cutoff_season": cutoff_season},
         )
         row = result.fetchone()
 
@@ -781,7 +797,20 @@ class PredictionEngine:
         player_id: int,
         is_home: bool,
     ) -> dict:
-        """Get player's home/away performance differential."""
+        """
+        Get player's home/away performance differential for the current
+        and prior season.
+
+        Career-spanning splits don't generalize: travel patterns, line
+        usage, and even arena lighting matter, but only in the current
+        context. Two seasons gives us enough sample without dragging
+        in 10-year-old data from a different team.
+        """
+        from backend.src.ingestion.scheduler import get_current_season
+
+        current_year = int(get_current_season())
+        cutoff_season = f"{current_year - 1}{current_year}"
+
         result = await db.execute(
             text("""
                 SELECT
@@ -790,9 +819,10 @@ class PredictionEngine:
                     COALESCE(SUM(points), 0) as points
                 FROM game_logs
                 WHERE player_id = :player_id
+                  AND (season IS NULL OR season >= :cutoff_season)
                 GROUP BY home_away
             """),
-            {"player_id": player_id}
+            {"player_id": player_id, "cutoff_season": cutoff_season},
         )
         rows = result.fetchall()
 

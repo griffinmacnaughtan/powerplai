@@ -318,9 +318,19 @@ async def _schedule_sync_pipeline(db: AsyncSession, **kwargs) -> int:
     FINAL with scores) and a forward window (to pick up newly announced
     playoff round-2/3 series). The NHL schedule endpoint returns a full
     week per call, so we step in 7-day strides to minimise API hits.
+
+    During playoffs we also backfill via /club-schedule-season/{team}/{season}
+    for every team that has any playoff appearance this season. The
+    league-wide /schedule/{date} endpoint sometimes drops finalized
+    series, so this guarantees round-by-round series get picked up
+    as soon as the NHL announces them.
     """
-    from backend.src.ingestion.games import ingest_schedule_for_date
+    from backend.src.ingestion.games import (
+        ingest_schedule_for_date,
+        ingest_team_season_schedule,
+    )
     from datetime import date, timedelta
+    from sqlalchemy import text as sql_text
 
     config = kwargs.get("config", PIPELINE_CONFIGS.get("schedule_sync"))
     days_ahead = config.extra.get("days_ahead", 14) if config else 14
@@ -353,6 +363,65 @@ async def _schedule_sync_pipeline(db: AsyncSession, **kwargs) -> int:
             continue
         seen_weeks.add(bucket)
         total += await ingest_schedule_for_date(db, d)
+
+    # Per-team playoff backfill (only when playoffs are in progress).
+    # Cheap during the regular season (no teams returned) and high-value
+    # during playoffs - this is what keeps the bracket complete when
+    # the league /schedule endpoint can't fully reconstruct it.
+    try:
+        season_row = await db.execute(
+            sql_text("""
+                SELECT season
+                FROM games
+                WHERE game_type = 3
+                ORDER BY game_date DESC
+                LIMIT 1
+            """)
+        )
+        srow = season_row.fetchone()
+        if srow and srow.season:
+            season = srow.season
+            team_rows = await db.execute(
+                sql_text("""
+                    SELECT DISTINCT team FROM (
+                        SELECT home_team_abbrev AS team FROM games
+                        WHERE game_type = 3 AND season = :season
+                        UNION
+                        SELECT away_team_abbrev AS team FROM games
+                        WHERE game_type = 3 AND season = :season
+                    ) t
+                    WHERE team IS NOT NULL
+                """),
+                {"season": season},
+            )
+            teams = [r.team for r in team_rows.fetchall()]
+            # Only backfill if a playoff game is within ~30 days either way -
+            # avoids wasting NHL API calls all summer.
+            recent_check = await db.execute(
+                sql_text("""
+                    SELECT COUNT(*) AS c
+                    FROM games
+                    WHERE game_type = 3 AND season = :season
+                      AND game_date BETWEEN :start AND :end
+                """),
+                {
+                    "season": season,
+                    "start": today - timedelta(days=30),
+                    "end": today + timedelta(days=30),
+                },
+            )
+            recent = recent_check.fetchone()
+            if recent and recent.c > 0:
+                for t in teams:
+                    try:
+                        total += await ingest_team_season_schedule(db, t, season)
+                    except Exception as e:
+                        logger.warning(
+                            "team_season_backfill_failed_in_pipeline",
+                            team=t, season=season, error=str(e),
+                        )
+    except Exception as e:
+        logger.warning("team_season_backfill_loop_failed", error=str(e))
 
     return total
 

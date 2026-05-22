@@ -38,6 +38,54 @@ _auto_update_running = False
 _startup_update_results = None
 
 
+# -----------------------------------------------------------------------------
+# Lightweight in-process caches for hot read-only endpoints.
+#
+# These exist to protect the DB and NHL API from a refresh-spamming browser
+# tab. They're intentionally module-level (not per-worker-scoped) because
+# Railway runs us with --workers 2 and the data is non-critical to share -
+# each worker gets its own cache, both stay fresh enough.
+# -----------------------------------------------------------------------------
+_ttl_cache: dict[tuple, tuple[float, object]] = {}
+_last_schedule_refresh_at: float = 0.0
+
+
+def _ttl_cache_get(key: tuple, ttl_seconds: float) -> object | None:
+    """Return cached value if still fresh, else None."""
+    import time
+    entry = _ttl_cache.get(key)
+    if entry is None:
+        return None
+    expires_at, value = entry
+    if time.time() < expires_at:
+        return value
+    # Lazy eviction
+    _ttl_cache.pop(key, None)
+    return None
+
+
+def _ttl_cache_set(key: tuple, value: object, ttl_seconds: float = 60.0) -> None:
+    """Store value with TTL."""
+    import time
+    _ttl_cache[(key if isinstance(key, tuple) else (key,))] = (time.time() + ttl_seconds, value)
+
+
+def _should_refresh_today_schedule(seconds: float = 300.0) -> bool:
+    """
+    Return True at most once per `seconds`, then start the cool-down.
+    Used to gate the synchronous /schedule refresh on hot endpoints
+    (e.g. /api/predictions/tonight) so a single fan reloading the
+    page doesn't hammer the NHL API.
+    """
+    import time
+    global _last_schedule_refresh_at
+    now = time.time()
+    if now - _last_schedule_refresh_at >= seconds:
+        _last_schedule_refresh_at = now
+        return True
+    return False
+
+
 async def run_startup_updates():
     """
     Run comprehensive startup updates including:
@@ -441,7 +489,7 @@ async def trigger_update(background_tasks: BackgroundTasks):
     if _auto_update_running:
         return {"status": "already_running", "message": "Update already in progress"}
 
-    background_tasks.add_task(run_startup_update)
+    background_tasks.add_task(run_startup_updates)
     return {"status": "started", "message": "Update started in background"}
 
 
@@ -1235,20 +1283,34 @@ async def get_player_prediction(
 
 
 @app.get("/api/predictions/tonight")
+@limiter.limit("30/minute")
 async def get_tonight_predictions(
+    request: Request,
     top_n: int = 5,
     db: AsyncSession = Depends(get_db),
 ):
     """
     Get scoring predictions for all games scheduled today.
 
-    Returns top scorers across all games.
+    Returns top scorers across all games. Cached in-memory for 60s and
+    rate-limited so a refresh-spamming browser tab can't hammer the
+    prediction engine and NHL API.
     """
     from backend.src.agents.predictions import prediction_engine
     from backend.src.ingestion.games import get_todays_games, refresh_todays_schedule
 
-    # Refresh today's schedule
-    await refresh_todays_schedule(db)
+    cache_key = ("predictions_tonight", top_n)
+    cached = _ttl_cache_get(cache_key, ttl_seconds=60)
+    if cached is not None:
+        return cached
+
+    # Throttle the upstream schedule refresh: at most once per 5 minutes.
+    # Calls in between still get fresh predictions against current DB state.
+    if _should_refresh_today_schedule(seconds=300):
+        try:
+            await refresh_todays_schedule(db)
+        except Exception as e:
+            logger.warning("tonight_schedule_refresh_failed", error=str(e))
 
     # Get today's games
     games = await get_todays_games(db)
@@ -1290,7 +1352,7 @@ async def get_tonight_predictions(
     all_top_scorers.sort(key=lambda p: p.prob_goal, reverse=True)
     overall_top = all_top_scorers[:10]
 
-    return {
+    result = {
         "date": date.today().isoformat(),
         "games_count": len(game_predictions),
         "games": game_predictions,
@@ -1323,6 +1385,8 @@ async def get_tonight_predictions(
             ],
         },
     }
+    _ttl_cache_set(cache_key, result)
+    return result
 
 
 # -------------------------------------------------------------------------
@@ -2701,16 +2765,33 @@ async def resync_playoffs(
     request: Request,
     days_back: int = 21,
     days_ahead: int = 21,
+    backfill_teams: bool = True,
     db: AsyncSession = Depends(get_db),
 ):
     """
     Force a wide-window schedule resync centred on today.
 
-    Useful when round transitions land outside the normal hourly cadence
-    or to recover from a long Railway sleep. Bounded to a sensible range
-    so it can't be used to hammer the NHL API.
+    Two-stage process:
+
+    1. Date-based pull: walks ±N days hitting the league /schedule/{date}
+       endpoint, deduped to one fetch per ISO week (the API returns full
+       weeks per call).
+
+    2. Team-based pull (if backfill_teams=True): for every team that has
+       any playoff appearance this season, hit the per-team
+       /club-schedule-season/{team}/{season} endpoint. This is the only
+       reliable way to recover round-by-round series that were inserted
+       as placeholders early in the postseason and never finalized when
+       round-2/3 matchups were determined - the league schedule
+       endpoint sometimes drops them once series wrap.
+
+    Bounded so it can't be abused to hammer the NHL API.
     """
-    from backend.src.ingestion.games import ingest_schedule_for_date
+    from backend.src.ingestion.games import (
+        ingest_schedule_for_date,
+        ingest_team_season_schedule,
+    )
+    from backend.src.agents.playoffs import get_current_playoff_season
 
     days_back = max(0, min(days_back, 30))
     days_ahead = max(0, min(days_ahead, 30))
@@ -2738,9 +2819,40 @@ async def resync_playoffs(
         seen_weeks.add(b)
         total += await ingest_schedule_for_date(db, d)
 
+    teams_pulled: list[str] = []
+    if backfill_teams:
+        season = await get_current_playoff_season(db)
+        if season:
+            team_rows = await db.execute(
+                text("""
+                    SELECT DISTINCT team FROM (
+                        SELECT home_team_abbrev AS team FROM games
+                        WHERE game_type = 3 AND season = :season
+                        UNION
+                        SELECT away_team_abbrev AS team FROM games
+                        WHERE game_type = 3 AND season = :season
+                    ) t
+                    WHERE team IS NOT NULL
+                    ORDER BY team
+                """),
+                {"season": season},
+            )
+            teams = [r.team for r in team_rows.fetchall()]
+            for t in teams:
+                try:
+                    n = await ingest_team_season_schedule(db, t, season)
+                    teams_pulled.append(t)
+                    total += n
+                except Exception as e:
+                    logger.warning(
+                        "team_season_backfill_failed",
+                        team=t, season=season, error=str(e),
+                    )
+
     return {
         "status": "ok",
         "weeks_fetched": len(seen_weeks),
+        "teams_backfilled": teams_pulled,
         "rows_upserted": total,
         "window": {
             "start": (today - timedelta(days=days_back)).isoformat(),
