@@ -271,8 +271,28 @@ async def get_playoff_bracket(
 
     games = await _series_games(db, season)
 
+    # Ghost-game filter. The DB accumulates placeholder schedule rows from
+    # early in the postseason that never got finalized (e.g. round-1
+    # matchups inserted before the real bracket was set). A game is a
+    # ghost if its date is well in the past and it's still flagged as
+    # not-completed - the schedule sync has had ample chances to update
+    # it by now and hasn't.
+    today = date.today()
+    GHOST_THRESHOLD_DAYS = 5
+
+    def _is_ghost(g: dict) -> bool:
+        completed = g["is_completed"] or g["game_state"] in ("FINAL", "OFF")
+        if completed:
+            return False
+        gd = g.get("game_date")
+        if not gd:
+            return False
+        return (today - gd).days > GHOST_THRESHOLD_DAYS
+
     series_map: dict[tuple[str, str], dict[str, Any]] = {}
     for g in games:
+        if _is_ghost(g):
+            continue
         key = _series_key(g["home_team_abbrev"], g["away_team_abbrev"])
         s = series_map.setdefault(
             key,
@@ -283,6 +303,7 @@ async def get_playoff_bracket(
                 "team_b_wins": 0,
                 "games_played": 0,
                 "games_total": 0,
+                "last_game_date": None,
                 "winner": None,
                 "next_game_date": None,
                 "next_game_time": None,
@@ -298,6 +319,9 @@ async def get_playoff_bracket(
                 s["team_a_wins"] += 1
             else:
                 s["team_b_wins"] += 1
+            gd = g.get("game_date")
+            if gd and (s["last_game_date"] is None or gd > s["last_game_date"]):
+                s["last_game_date"] = gd
         else:
             # Track earliest upcoming game for this series
             if s["next_game_date"] is None or (g["game_date"] and g["game_date"] < s["next_game_date"]):
@@ -306,6 +330,10 @@ async def get_playoff_bracket(
 
     out_series: list[dict[str, Any]] = []
     for s in series_map.values():
+        # Drop empty shells (series with no surviving games after ghost filter).
+        if s["games_total"] == 0:
+            continue
+
         if s["team_a_wins"] >= 4:
             s["winner"] = s["team_a"]
             status = "complete"
@@ -318,11 +346,20 @@ async def get_playoff_bracket(
             status = "in_progress"
         s["status"] = status
 
+        # Drop completed series that wrapped a long time ago - they're
+        # historical context, not part of the active bracket view.
+        if status == "complete" and s["last_game_date"]:
+            days_since = (today - s["last_game_date"]).days
+            if days_since > 21:
+                continue
+
         # Serialize dates
         if s["next_game_date"] is not None:
             s["next_game_date"] = s["next_game_date"].isoformat()
         if s["next_game_time"] is not None:
             s["next_game_time"] = s["next_game_time"].isoformat()
+        if s["last_game_date"] is not None:
+            s["last_game_date"] = s["last_game_date"].isoformat()
 
         del s["games_total"]
         out_series.append(s)
@@ -331,8 +368,12 @@ async def get_playoff_bracket(
     status_order = {"in_progress": 0, "scheduled": 1, "complete": 2}
     out_series.sort(key=lambda x: (status_order[x["status"]], -(x["team_a_wins"] + x["team_b_wins"])))
 
-    # Round inference: first round = 8 series, second = 4, conf finals = 2, cup = 1.
-    n = len(out_series)
+    # Round inference: count active series (anything not finished long ago).
+    # First round has 8, second 4, conference finals 2, Stanley Cup Final 1.
+    # We bias toward the latest round we have evidence of, so a few stragglers
+    # from the previous round don't keep us stuck on round_n - 1.
+    active_count = sum(1 for s in out_series if s["status"] in ("in_progress", "scheduled"))
+    n = active_count if active_count > 0 else len(out_series)
     if n >= 8:
         current_round = 1
     elif n >= 4:
