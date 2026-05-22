@@ -609,6 +609,51 @@ Examples:
                 f"  xG: {row.xg or 0:.2f}, CF%: {row.corsi_for_pct or 50:.1f}%, TOI/G: {toi_str}"
             )
 
+        # Augment with playoff stats from game_logs when we're in postseason.
+        # Without this, "is McDavid putting up points in the playoffs?" got
+        # answered with "I don't have playoff statistics" because this
+        # method only reads player_season_stats (regular season).
+        try:
+            from backend.src.agents.playoffs import is_playoffs_active
+            if await is_playoffs_active(db):
+                playoff_res = await db.execute(
+                    text(f"""
+                        SELECT
+                            p.name,
+                            gl.team_abbrev,
+                            COUNT(*) AS games,
+                            COALESCE(SUM(gl.goals), 0) AS goals,
+                            COALESCE(SUM(gl.assists), 0) AS assists,
+                            COALESCE(SUM(gl.points), 0) AS points,
+                            COALESCE(SUM(gl.shots), 0) AS shots,
+                            COALESCE(AVG(gl.toi), 0) AS avg_toi
+                        FROM players p
+                        JOIN game_logs gl ON gl.player_id = p.id
+                        JOIN games g ON g.nhl_game_id = gl.game_id
+                        WHERE g.game_type = 3
+                          AND ({' OR '.join([f"p.name ILIKE :name{i}" for i in range(len(player_names))])})
+                          AND g.season = (
+                              SELECT MAX(season) FROM games WHERE game_type = 3
+                          )
+                        GROUP BY p.id, p.name, gl.team_abbrev
+                        ORDER BY points DESC, goals DESC
+                    """),
+                    params,
+                )
+                playoff_rows = playoff_res.fetchall()
+                if playoff_rows:
+                    stats_text.append("\n**Current Playoff Stats** (game_type=3, this postseason):")
+                    for pr in playoff_rows:
+                        ppg = float(pr.points) / pr.games if pr.games else 0.0
+                        gpg = float(pr.goals) / pr.games if pr.games else 0.0
+                        stats_text.append(
+                            f"  - **{pr.name}** ({pr.team_abbrev}): "
+                            f"{pr.games} GP, {pr.goals}G, {pr.assists}A, {pr.points}P "
+                            f"({ppg:.2f} PPG, {gpg:.2f} GPG)"
+                        )
+        except Exception as e:
+            logger.warning("playoff_stats_fetch_failed", error=str(e))
+
         return "\n\n".join(stats_text)
 
     async def _fetch_team_stats(
