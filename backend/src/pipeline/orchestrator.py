@@ -592,9 +592,12 @@ async def start_scheduler():
         except Exception as e:
             logger.error("playoff_picks_validation_failed", error=str(e))
 
+    # Run pick generation every 30 minutes. The generator itself is a
+    # no-op once any pick for a date is within the 2h lock window, so
+    # this gives fresh picks until they freeze without flicker after.
     _scheduler.add_job(
         run_playoff_picks_generation,
-        CronTrigger(hour=14, minute=30),
+        IntervalTrigger(minutes=30),
         id="playoff_picks_generate",
         replace_existing=True,
     )

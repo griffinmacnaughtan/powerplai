@@ -667,6 +667,266 @@ async def get_playoff_overview(
     }
 
 
+async def get_series_detail(
+    db: AsyncSession,
+    team_a: str,
+    team_b: str,
+    season: str | None = None,
+) -> dict[str, Any]:
+    """
+    Comprehensive detail for a single playoff series.
+
+    Powers the click-into-series modal on the homepage bracket. Returns
+    everything a fan would want to see for one matchup in a single trip:
+
+    - Series header (current record, status, winner, round, conference)
+    - Game-by-game results (date, score, venue, state, OT marker)
+    - Upcoming games in the series (next puck drop, venue)
+    - Top playoff scorers from each team across the series
+    - Goalies who have played for each team, with this-postseason stats
+    - Model picks tied to this matchup for the next scheduled game
+
+    This is a read-mostly endpoint; all the heavy lifting is plain SQL.
+    """
+    if season is None:
+        season = await get_current_playoff_season(db)
+    if not season:
+        return {"season": None, "series": None}
+
+    # Normalise the team pair - the bracket uses alphabetical order.
+    a, b = (team_a.upper(), team_b.upper())
+    if a > b:
+        a, b = b, a
+
+    # All games in this matchup for the active season, ordered chronologically.
+    games_res = await db.execute(
+        text("""
+            SELECT nhl_game_id, game_date, start_time_utc, venue, game_state,
+                   home_team_abbrev, away_team_abbrev, home_score, away_score,
+                   is_completed
+            FROM games
+            WHERE game_type = :pt
+              AND season = :season
+              AND (
+                   (home_team_abbrev = :a AND away_team_abbrev = :b)
+                OR (home_team_abbrev = :b AND away_team_abbrev = :a)
+              )
+            ORDER BY game_date ASC, start_time_utc ASC NULLS LAST
+        """),
+        {"pt": PLAYOFF_GAME_TYPE, "season": season, "a": a, "b": b},
+    )
+    raw_games = games_res.fetchall()
+    if not raw_games:
+        return {"season": season, "series": None}
+
+    today = date.today()
+    games: list[dict[str, Any]] = []
+    completed_games: list[dict[str, Any]] = []
+    upcoming_games: list[dict[str, Any]] = []
+    a_wins = 0
+    b_wins = 0
+    series_round: int | None = None
+    for r in raw_games:
+        # Skip ghost rows (stale FUT placeholder past their date) so the
+        # series view matches the bracket view.
+        state = (r.game_state or "").upper()
+        completed = bool(r.is_completed or state in ("FINAL", "OFF"))
+        if not completed and r.game_date and (today - r.game_date).days > 5:
+            continue
+
+        rnd = parse_playoff_round(r.nhl_game_id)
+        if rnd is not None and series_round is None:
+            series_round = rnd
+
+        # Determine which team won the game (if completed).
+        winner: str | None = None
+        if completed and r.home_score is not None and r.away_score is not None:
+            if r.home_score > r.away_score:
+                winner = r.home_team_abbrev
+            elif r.away_score > r.home_score:
+                winner = r.away_team_abbrev
+            if winner == a:
+                a_wins += 1
+            elif winner == b:
+                b_wins += 1
+
+        game_entry = {
+            "game_id": r.nhl_game_id,
+            "game_date": r.game_date.isoformat() if r.game_date else None,
+            "start_time_utc": r.start_time_utc.isoformat() if r.start_time_utc else None,
+            "venue": r.venue,
+            "state": r.game_state,
+            "home_team": r.home_team_abbrev,
+            "away_team": r.away_team_abbrev,
+            "home_score": int(r.home_score) if r.home_score is not None else None,
+            "away_score": int(r.away_score) if r.away_score is not None else None,
+            "winner": winner,
+            "is_completed": completed,
+        }
+        games.append(game_entry)
+        if completed:
+            completed_games.append(game_entry)
+        else:
+            upcoming_games.append(game_entry)
+
+    if not games:
+        return {"season": season, "series": None}
+
+    if a_wins >= 4:
+        status = "complete"
+        series_winner = a
+    elif b_wins >= 4:
+        status = "complete"
+        series_winner = b
+    elif completed_games:
+        status = "in_progress"
+        series_winner = None
+    else:
+        status = "scheduled"
+        series_winner = None
+
+    leader = a if a_wins > b_wins else (b if b_wins > a_wins else None)
+    conf_a = team_conference(a)
+    conf_b = team_conference(b)
+    series_conf = None if (conf_a and conf_b and conf_a != conf_b) else (conf_a or conf_b)
+
+    # Per-team top scorers across this series.
+    async def _top_scorers(team_abbrev: str) -> list[dict[str, Any]]:
+        scorer_res = await db.execute(
+            text("""
+                SELECT p.id, p.name, p.position,
+                       COUNT(*) AS games,
+                       COALESCE(SUM(gl.goals), 0) AS goals,
+                       COALESCE(SUM(gl.assists), 0) AS assists,
+                       COALESCE(SUM(gl.points), 0) AS points,
+                       COALESCE(SUM(gl.shots), 0) AS shots,
+                       AVG(gl.toi) AS avg_toi
+                FROM game_logs gl
+                JOIN players p ON p.id = gl.player_id
+                JOIN games g ON g.nhl_game_id = gl.game_id
+                WHERE g.game_type = :pt
+                  AND g.season = :season
+                  AND gl.team_abbrev = :team
+                  AND (
+                       (g.home_team_abbrev = :a AND g.away_team_abbrev = :b)
+                    OR (g.home_team_abbrev = :b AND g.away_team_abbrev = :a)
+                  )
+                GROUP BY p.id, p.name, p.position
+                HAVING COUNT(*) > 0
+                ORDER BY points DESC, goals DESC
+                LIMIT 5
+            """),
+            {"pt": PLAYOFF_GAME_TYPE, "season": season, "team": team_abbrev, "a": a, "b": b},
+        )
+        return [
+            {
+                "player_id": r.id,
+                "name": r.name,
+                "position": r.position,
+                "games": int(r.games),
+                "goals": int(r.goals),
+                "assists": int(r.assists),
+                "points": int(r.points),
+                "shots": int(r.shots),
+                "avg_toi": float(r.avg_toi) if r.avg_toi is not None else None,
+                "ppg": round(float(r.points) / r.games, 2) if r.games else 0.0,
+            }
+            for r in scorer_res.fetchall()
+        ]
+
+    a_scorers = await _top_scorers(a)
+    b_scorers = await _top_scorers(b)
+
+    # Goalies who started or appeared in any game of this series for each team.
+    async def _goalies(team_abbrev: str) -> list[dict[str, Any]]:
+        goalie_res = await db.execute(
+            text("""
+                SELECT p.name, g.save_pct, g.goals_against_avg, g.games_played, g.wins, g.losses
+                FROM goalie_stats g
+                JOIN players p ON p.id = g.player_id
+                WHERE g.season = :season
+                  AND g.team_abbrev = :team
+                  AND COALESCE(g.games_played, 0) > 0
+                ORDER BY g.games_played DESC
+                LIMIT 3
+            """),
+            {"season": season, "team": team_abbrev},
+        )
+        return [
+            {
+                "name": r.name,
+                "save_pct": float(r.save_pct) if r.save_pct is not None else None,
+                "gaa": float(r.goals_against_avg) if r.goals_against_avg is not None else None,
+                "games_played": int(r.games_played) if r.games_played is not None else 0,
+                "wins": int(r.wins) if r.wins is not None else 0,
+                "losses": int(r.losses) if r.losses is not None else 0,
+            }
+            for r in goalie_res.fetchall()
+        ]
+
+    a_goalies = await _goalies(a)
+    b_goalies = await _goalies(b)
+
+    # Model picks tied to the next upcoming game in this series, if any.
+    next_picks: list[dict[str, Any]] = []
+    next_game = upcoming_games[0] if upcoming_games else None
+    if next_game:
+        pick_res = await db.execute(
+            text("""
+                SELECT rank, player_name, team, opponent, is_home, market, line,
+                       probability, prob_goal, prob_point, confidence, opponent_goalie
+                FROM playoff_picks
+                WHERE game_id = :gid
+                ORDER BY rank
+            """),
+            {"gid": next_game["game_id"]},
+        )
+        next_picks = [
+            {
+                "rank": int(r.rank),
+                "player_name": r.player_name,
+                "team": r.team,
+                "opponent": r.opponent,
+                "is_home": bool(r.is_home),
+                "market": r.market,
+                "line": r.line,
+                "probability": round(float(r.probability), 3),
+                "prob_goal": round(float(r.prob_goal), 3) if r.prob_goal is not None else None,
+                "prob_point": round(float(r.prob_point), 3) if r.prob_point is not None else None,
+                "confidence": r.confidence,
+                "opponent_goalie": r.opponent_goalie,
+            }
+            for r in pick_res.fetchall()
+        ]
+
+    return {
+        "season": season,
+        "series": {
+            "team_a": a,
+            "team_b": b,
+            "team_a_wins": a_wins,
+            "team_b_wins": b_wins,
+            "games_played": len(completed_games),
+            "leader": leader,
+            "winner": series_winner,
+            "status": status,
+            "round": series_round,
+            "conference": series_conf,
+            "games": games,
+            "next_game": next_game,
+            "top_scorers": {
+                a: a_scorers,
+                b: b_scorers,
+            },
+            "goalies": {
+                a: a_goalies,
+                b: b_goalies,
+            },
+            "next_game_picks": next_picks,
+        },
+    }
+
+
 async def get_tonight_playoff_games(
     db: AsyncSession,
     target_date: date | None = None,
@@ -825,33 +1085,88 @@ def _select_market(p: Any) -> tuple[str, float, str]:
 
 # ── Nightly top-3 generation (persisted for record tracking) ────────────────
 
+PICK_LOCK_LEAD_MINUTES = 120  # picks freeze 2h before their game's puck drop
+
+
 async def generate_nightly_playoff_picks(
     db: AsyncSession,
     target_date: date | None = None,
     per_night: int = 3,
+    force: bool = False,
 ) -> list[dict[str, Any]]:
     """
     Produce and persist the top `per_night` playoff picks for a single date.
 
-    Skips re-generation if picks already exist for that date. Safe to call
-    on a daily cron. Returns the picks written (or already present).
+    Recalibration cadence
+    ---------------------
+    Picks for a date are REGENERATED on each call as long as none of the
+    existing picks are within their per-game 2h lock window (and none have
+    been graded). This lets the scheduler run every 30 minutes during the
+    day and keep picks fresh with the latest injury/lineup news, then
+    naturally freeze them in their final form once the lock window opens.
+
+    Once any pick for the date is locked / live / final, the function
+    becomes a no-op for that date - call returns the existing picks. This
+    avoids flicker on the homepage while games are in progress, and
+    preserves the audit trail for the validator.
+
+    Pass `force=True` to bypass the lock check (admin/test only).
+
+    Returns the picks now in the DB for the date.
     """
     from backend.src.agents.predictions import PredictionEngine
+    from datetime import datetime as _dt
 
     d = target_date or date.today()
 
-    # Idempotent: skip if already generated for this date
+    # Inspect existing picks + their associated game start times so we can
+    # tell whether any are inside the 2h lock window or have already been
+    # graded.
     existing_res = await db.execute(
-        text("SELECT rank, player_name, team, opponent, market, line, probability, prob_goal, prob_point, confidence, hit FROM playoff_picks WHERE game_date = :d ORDER BY rank"),
+        text("""
+            SELECT pp.id, pp.rank, pp.player_name, pp.team, pp.opponent, pp.market,
+                   pp.line, pp.probability, pp.prob_goal, pp.prob_point,
+                   pp.confidence, pp.hit, pp.validated_at, pp.game_id,
+                   g.start_time_utc, g.game_state, g.is_completed
+            FROM playoff_picks pp
+            LEFT JOIN games g ON g.nhl_game_id = pp.game_id
+            WHERE pp.game_date = :d
+            ORDER BY pp.rank
+        """),
         {"d": d},
     )
     existing = existing_res.fetchall()
-    if existing:
-        return [dict(r._mapping) for r in existing]
+
+    if existing and not force:
+        now = _dt.utcnow()
+        any_locked = False
+        for r in existing:
+            if r.validated_at is not None:
+                any_locked = True
+                break
+            state = (r.game_state or "").upper()
+            if r.is_completed or state in ("FINAL", "OFF", "LIVE", "CRIT"):
+                any_locked = True
+                break
+            if r.start_time_utc is not None:
+                minutes_to_puck = (r.start_time_utc - now).total_seconds() / 60.0
+                if minutes_to_puck <= PICK_LOCK_LEAD_MINUTES:
+                    any_locked = True
+                    break
+        if any_locked:
+            logger.info("playoff_picks_locked_skip_regen", date=str(d))
+            return [dict(r._mapping) for r in existing]
+
+        # No pick locked yet - clear and regenerate with fresh model output
+        await db.execute(
+            text("DELETE FROM playoff_picks WHERE game_date = :d"),
+            {"d": d},
+        )
 
     games = await get_tonight_playoff_games(db, d)
     if not games:
-        return []
+        # If nothing scheduled, leave whatever was there (rare edge case)
+        return [dict(r._mapping) for r in existing] if existing else []
 
     engine = PredictionEngine(db=db)
     candidates: list[tuple[float, Any, dict[str, Any]]] = []

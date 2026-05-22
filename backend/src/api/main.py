@@ -2991,6 +2991,29 @@ async def get_playoffs_bracket(
     return await get_playoff_bracket(db, season)
 
 
+@app.get("/api/playoffs/series/{team_a}/{team_b}")
+async def get_playoff_series_detail(
+    team_a: str,
+    team_b: str,
+    season: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Comprehensive detail for a single playoff series.
+
+    Powers the click-into-series modal on the homepage bracket. Returns
+    games (completed + upcoming), per-team top scorers, goalies, and the
+    model's picks for the next scheduled game in the matchup.
+
+    Team order doesn't matter - we normalise alphabetically internally.
+    """
+    from backend.src.agents.playoffs import get_series_detail
+    result = await get_series_detail(db, team_a, team_b, season)
+    if not result.get("series"):
+        raise HTTPException(status_code=404, detail="Series not found")
+    return result
+
+
 @app.get("/api/playoffs/overview")
 async def get_playoffs_overview(
     season: str | None = None,
@@ -3066,7 +3089,7 @@ async def get_playoff_picks_for_date(
                    pp.market, pp.line, pp.probability, pp.prob_goal, pp.prob_point,
                    pp.confidence, pp.opponent_goalie, pp.hit, pp.actual_goals,
                    pp.actual_assists, pp.actual_points, pp.validated_at,
-                   pp.game_id,
+                   pp.game_id, pp.generated_at,
                    g.start_time_utc, g.game_state, g.is_completed
             FROM playoff_picks pp
             LEFT JOIN games g ON g.nhl_game_id = pp.game_id
@@ -3077,9 +3100,12 @@ async def get_playoff_picks_for_date(
     )
 
     LOCK_LEAD_MINUTES = 120  # picks "lock in" 2h before puck drop
+    REGEN_INTERVAL_MINUTES = 30  # scheduler cadence - matches orchestrator
     now_utc = _dt.now(_tz.utc).replace(tzinfo=None)
+    rows = res.fetchall()
+    last_generated_at: _dt | None = None
     picks: list[dict] = []
-    for r in res.fetchall():
+    for r in rows:
         start = r.start_time_utc
         lock_time = (start - timedelta(minutes=LOCK_LEAD_MINUTES)) if start else None
         minutes_to_lock = (
@@ -3111,6 +3137,9 @@ async def get_playoff_picks_for_date(
         else:
             lock_status = "open"
 
+        if r.generated_at and (last_generated_at is None or r.generated_at > last_generated_at):
+            last_generated_at = r.generated_at
+
         picks.append({
             "date": r.game_date.isoformat(),
             "rank": int(r.rank),
@@ -3138,7 +3167,33 @@ async def get_playoff_picks_for_date(
             "lock_status": lock_status,
             "game_state": r.game_state,
         })
-    return {"date": d.isoformat(), "picks": picks, "count": len(picks)}
+
+    # All picks either share a generation timestamp or are very close.
+    # Surface the most recent so the UI can render "Updated 12m ago" and
+    # tell the user the next recalibration is coming.
+    picks_updated_at = last_generated_at.isoformat() if last_generated_at else None
+    minutes_since_generated = (
+        round((now_utc - last_generated_at).total_seconds() / 60.0, 1)
+        if last_generated_at else None
+    )
+
+    # Are any picks already past the lock window? If so, the cadence is
+    # effectively frozen for this date even though the scheduler keeps
+    # ticking.
+    any_locked = any(
+        p["lock_status"] in ("locked", "live", "final") for p in picks
+    )
+
+    return {
+        "date": d.isoformat(),
+        "picks": picks,
+        "count": len(picks),
+        "picks_updated_at": picks_updated_at,
+        "minutes_since_generated": minutes_since_generated,
+        "recalibration_interval_minutes": REGEN_INTERVAL_MINUTES,
+        "lock_lead_minutes": LOCK_LEAD_MINUTES,
+        "frozen": any_locked,
+    }
 
 
 @app.get("/api/playoffs/picks/record")
