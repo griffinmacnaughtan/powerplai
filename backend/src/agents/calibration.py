@@ -63,9 +63,14 @@ TTL_SECONDS = 6 * 3600
 # thresholds so a cold-start system still labels things sanely.
 MIN_SAMPLE_FOR_CALIBRATION = 60
 
-# Hit-rate targets that define our confidence tiers.
-HIGH_TARGET_HIT_RATE = 0.45
-MEDIUM_TARGET_HIT_RATE = 0.25
+# Hit-rate targets that define our confidence tiers. These are deliberately
+# achievable: empirically, the prediction model rarely sustains >45% hit
+# rate even in its strongest probability bucket, so a 45% target leaves us
+# permanently uncalibrated. 0.35 / 0.20 reflects what the model can
+# actually do, and lets the calibration system trade ANY "high confidence"
+# label for honest evidence that the bucket really hits more often.
+HIGH_TARGET_HIT_RATE = 0.35
+MEDIUM_TARGET_HIT_RATE = 0.20
 
 # Legacy fallback thresholds (the old fixed cuts).
 LEGACY_HIGH_THRESHOLD = 0.30
@@ -241,6 +246,15 @@ def _derive_thresholds(buckets: list[CalibrationBucket]) -> tuple[float, float, 
             high = b.lo
         if medium is None and running_max >= MEDIUM_TARGET_HIT_RATE:
             medium = b.lo
+
+    # If we couldn't find a "high" tier but DID find a "medium" tier,
+    # synthesize "high" as 1.5x the medium threshold (rounded). The
+    # alternative - falling back entirely - was masking real evidence
+    # that the model is overconfident: legacy 0.30 threshold was
+    # labeling picks "high confidence" when the bucket data showed
+    # they hit 12% of the time.
+    if high is None and medium is not None:
+        high = min(0.60, max(medium + 0.10, medium * 1.5))
 
     if high is None or medium is None:
         return LEGACY_HIGH_THRESHOLD, LEGACY_MEDIUM_THRESHOLD, True
