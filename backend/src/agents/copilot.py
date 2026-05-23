@@ -19,6 +19,21 @@ logger = structlog.get_logger()
 settings = get_settings()
 
 
+def _poisson_at_least_two(mean: float) -> float:
+    """
+    P(X >= 2) where X ~ Poisson(mean).
+    = 1 - P(X=0) - P(X=1)
+    = 1 - e^-mean - mean * e^-mean
+    Used to translate expected shots on goal into a "2+ SOG" probability
+    for parlay leg evaluation.
+    """
+    import math
+    if mean <= 0:
+        return 0.0
+    e_neg = math.exp(-mean)
+    return max(0.0, min(1.0, 1.0 - e_neg - mean * e_neg))
+
+
 SYSTEM_PROMPT = """You are PowerplAI, an expert hockey analytics assistant. You help users understand NHL statistics, player performance, and make data-driven insights for fantasy hockey and predictions.
 
 You have access to:
@@ -194,7 +209,87 @@ class PowerplAICopilot:
                 "query_type": "daily_briefing",
             }
 
-        # PRIORITY: Parlay tracker queries
+        # Implicit playoff awareness: if the user named two teams that are
+        # currently in an active playoff series, treat the query as a
+        # playoff query even if no playoff keyword was used. Without this,
+        # "parlay for the Habs Canes game tonight" gets classified as a
+        # generic parlay request and skips all the bracket context.
+        if not classification.get("is_playoffs_query"):
+            try:
+                if await self._teams_in_active_playoff_series(db, classification.get("teams") or []):
+                    classification["is_playoffs_query"] = True
+                    logger.info(
+                        "implicit_playoff_routing",
+                        teams=classification.get("teams"),
+                    )
+            except Exception:
+                pass
+
+        # PRIORITY: Custom parlay request for a specific game. This needs
+        # matchup prediction data (per-team scoring, expected shots, point
+        # probabilities, over/under reference) so the LLM can compose a
+        # multi-leg parlay - NOT the pre-built daily parlay tracker.
+        if classification.get("is_custom_parlay"):
+            # Pull matchup prediction (handler is generic across teams + dates)
+            pred_context = await self._fetch_predictions(db, classification)
+            if pred_context:
+                context_parts.append(f"## Matchup Prediction (for custom parlay)\n{pred_context}")
+                sources.append({"type": "prediction", "data": "scoring_predictions"})
+            # Also inject playoff context if applicable - tells the LLM the
+            # series record, which affects how to weight a winner pick.
+            if classification.get("is_playoffs_query"):
+                playoff_context = await self._fetch_playoff_context(db, classification)
+                if playoff_context:
+                    context_parts.append(playoff_context)
+                    sources.append({"type": "playoffs", "data": "playoff_bracket"})
+            # Append a brief brief on how to compose the parlay so the LLM
+            # frames it consistently as a build (4-6 legs with reasoning),
+            # not a list of independent picks.
+            context_parts.append(
+                "## Parlay Composition Guidance\n"
+                "Compose a SINGLE multi-leg parlay using the data above. For each leg state:\n"
+                "  (1) the market and exact selection\n"
+                "  (2) the model probability supporting it\n"
+                "  (3) a one-sentence rationale grounded in the data\n"
+                "If the user asked for specific leg types (winner, total goals, player props, shots), "
+                "include those exact markets. Rank legs from highest to lowest confidence. End with a "
+                "combined-probability estimate (multiply leg probabilities, assume independence as a "
+                "rough baseline) and a brief risk note."
+            )
+            response = await self._generate_response(
+                user_query, "\n\n".join(context_parts), conversation_history, images
+            )
+            return {
+                "response": response,
+                "sources": sources,
+                "query_type": "custom_parlay",
+            }
+
+        # PRIORITY: Playoff-aware queries (without explicit custom-parlay intent).
+        # Anything mentioning the bracket, Stanley Cup, conference finals,
+        # "who will win", etc. needs full postseason context before we
+        # route to the generic prediction handler.
+        if classification.get("is_playoffs_query"):
+            playoff_context = await self._fetch_playoff_context(db, classification)
+            if playoff_context:
+                context_parts.append(playoff_context)
+                sources.append({"type": "playoffs", "data": "playoff_bracket"})
+                if classification.get("is_prediction_query") and classification.get("teams"):
+                    pred_context = await self._fetch_predictions(db, classification)
+                    if pred_context:
+                        context_parts.append(f"## Scoring Predictions\n{pred_context}")
+                        sources.append({"type": "prediction", "data": "scoring_predictions"})
+                response = await self._generate_response(
+                    user_query, "\n\n".join(context_parts), conversation_history, images
+                )
+                return {
+                    "response": response,
+                    "sources": sources,
+                    "query_type": "playoffs",
+                }
+
+        # PRIORITY: Parlay tracker queries (show me today's pre-built parlays
+        # or the model's record). Distinct from is_custom_parlay above.
         if classification.get("is_parlay_query") or classification.get("type") == "parlay_track":
             from backend.src.agents.parlay_tracker import get_today_parlays_context, get_parlay_record
             parlay_context = await get_today_parlays_context(db)
@@ -215,35 +310,6 @@ class PowerplAICopilot:
                 "sources": sources,
                 "query_type": "parlay_track",
             }
-
-        # PRIORITY: Playoff-aware queries. Anything mentioning the bracket,
-        # Stanley Cup, conference finals, "who will win", etc. needs the full
-        # postseason context (which series exist, who's playing, what the
-        # records are) BEFORE we route to the generic prediction handler -
-        # otherwise the LLM gets handed single-game data and can't answer.
-        if classification.get("is_playoffs_query"):
-            playoff_context = await self._fetch_playoff_context(db, classification)
-            if playoff_context:
-                context_parts.append(playoff_context)
-                sources.append({"type": "playoffs", "data": "playoff_bracket"})
-                # If the query was also tagged as a prediction query, also fetch
-                # specific game predictions for any teams the user named, so
-                # the LLM has both the bracket view AND tonight's projections.
-                if classification.get("is_prediction_query") and classification.get("teams"):
-                    pred_context = await self._fetch_predictions(db, classification)
-                    if pred_context:
-                        context_parts.append(f"## Scoring Predictions\n{pred_context}")
-                        sources.append({"type": "prediction", "data": "scoring_predictions"})
-                # Short-circuit: we have everything needed for a playoff
-                # question. Skip the rest of the if/elif chain.
-                response = await self._generate_response(
-                    user_query, "\n\n".join(context_parts), conversation_history, images
-                )
-                return {
-                    "response": response,
-                    "sources": sources,
-                    "query_type": "playoffs",
-                }
 
         # PRIORITY: Check for Olympic betting queries first (parlay, value bets, edges)
         if classification.get("is_olympics_query") and classification.get("is_edge_query"):
@@ -463,7 +529,8 @@ Respond with JSON only:
     "is_recent_results_query": true if asking about past/completed games, who played yesterday, last night's games, recent results, scores, or what happened in a game,
     "days_offset": integer days back from today (0=today, 1=yesterday, 2=two days ago, etc.) - set when the query has a relative time reference,
     "is_briefing_query": true if asking for a daily briefing, morning digest, lineup summary, or today's overview,
-    "is_parlay_query": true if asking about today's parlays, model picks, parlay tracker, parlay record, or how parlays are performing,
+    "is_parlay_query": true ONLY if asking to SEE the pre-built daily parlay tracker, model parlay record, or how parlays are performing (e.g. "show me today's parlays", "parlay record"). DO NOT set this for requests to BUILD a custom parlay for a specific game,
+    "is_custom_parlay": true if asking to BUILD or RECOMMEND a custom parlay for a specific game, with custom legs like over/under, game winner, player props, shots (e.g. "give me a parlay for tonight's game", "build a 4-leg parlay for Habs Canes", "winning parlay for the Edmonton game"),
     "is_playoffs_query": true if asking about playoffs, bracket, Stanley Cup, conference final, second round, championship, who will win the Cup, playoff predictions, playoff matchups, or any NHL postseason context,
     "top_n": number if asking for top N players OR a specific rank (e.g. "top 3" = 3, "top 5" = 5, "23rd best" = 23, "10th" = 10, "who is ranked 15" = 15),
     "offered_odds": number if asking about a specific bet with odds (e.g. "+210" = 210, "-150" = -150)
@@ -549,7 +616,14 @@ Examples:
 - "What round are we in?" -> type: "stats_lookup", is_playoffs_query: true
 - "Who advanced to the conference finals?" -> type: "stats_lookup", is_playoffs_query: true
 - "Predictions for game 2 of the Western conference final" -> type: "matchup_prediction", is_playoffs_query: true, is_prediction_query: true
-- "Picks for tonight's playoff game" -> type: "tonight_prediction", is_playoffs_query: true, is_prediction_query: true, is_tonight_query: true"""
+- "Picks for tonight's playoff game" -> type: "tonight_prediction", is_playoffs_query: true, is_prediction_query: true, is_tonight_query: true
+- "Give me a winning parlay for the Habs Canes game tonight" -> type: "matchup_prediction", teams: ["MTL", "CAR"], is_custom_parlay: true, is_prediction_query: true, is_tonight_query: true, is_playoffs_query: true
+- "Build me a 4-leg parlay for Edmonton tonight, winner + over/under + 2 player points" -> type: "matchup_prediction", teams: ["EDM"], is_custom_parlay: true, is_prediction_query: true, is_tonight_query: true
+- "What's a good parlay for the Avs game?" -> type: "matchup_prediction", teams: ["COL"], is_custom_parlay: true, is_prediction_query: true
+- "Parlay ideas for tonight" -> type: "tonight_prediction", is_custom_parlay: true, is_prediction_query: true, is_tonight_query: true
+- "Show me today's parlays" -> type: "parlay_track", is_parlay_query: true
+- "What parlays do you have today?" -> type: "parlay_track", is_parlay_query: true
+- "How is the model parlay tracker doing?" -> type: "parlay_track", is_parlay_query: true"""
                 }
             ],
         )
@@ -1211,6 +1285,39 @@ Examples:
 
         return "\n".join(stats_text)
 
+    async def _teams_in_active_playoff_series(
+        self,
+        db: AsyncSession,
+        teams: list[str],
+    ) -> bool:
+        """
+        Returns True if the user named two teams that are currently in an
+        active (in_progress) playoff series together.
+
+        Used to flip is_playoffs_query on when the user implies a playoff
+        matchup without saying "playoff" explicitly - e.g. "parlay for
+        the Habs Canes game tonight" during the Eastern Conference Final.
+        """
+        if not teams or len(teams) < 2:
+            return False
+        from backend.src.agents.playoffs import get_playoff_bracket
+        # Normalise to abbreviations using the existing helper
+        team_abbrevs = self._normalize_teams(teams[:2])
+        if len(team_abbrevs) < 2:
+            return False
+        a, b = (team_abbrevs[0].upper(), team_abbrevs[1].upper())
+        try:
+            bracket = await get_playoff_bracket(db)
+        except Exception:
+            return False
+        for s in bracket.get("series", []):
+            if s.get("status") != "in_progress":
+                continue
+            pair = {s.get("team_a"), s.get("team_b")}
+            if {a, b} == pair:
+                return True
+        return False
+
     async def _fetch_playoff_context(
         self,
         db: AsyncSession,
@@ -1628,18 +1735,77 @@ Examples:
                 ag = prediction.away_goalie
                 lines.append(f"- {prediction.away_team}: {ag.get('name', 'Unknown')} ({ag.get('save_pct', 0):.3f} SV%, {ag.get('gaa', 0):.2f} GAA)")
 
+        # Per-team scoring summary so the LLM can pick a winner.
+        # Sum expected goals across each team's top players as a proxy
+        # for team strength.
+        home_xg = sum(p.expected_goals for p in prediction.home_players[:6])
+        away_xg = sum(p.expected_goals for p in prediction.away_players[:6])
+        if home_xg or away_xg:
+            favored = (
+                prediction.home_team if home_xg > away_xg
+                else prediction.away_team if away_xg > home_xg
+                else "even"
+            )
+            lines.append(
+                f"\n**Team Strength (top-6 expected goals):** "
+                f"{prediction.home_team} {home_xg:.2f} vs {prediction.away_team} {away_xg:.2f} -> "
+                f"**model favours {favored}**"
+            )
+
+        # Over/under reference vs the standard 5.5 market line so a
+        # parlay can include a total-goals leg.
+        if prediction.expected_total_goals:
+            ou_line = 5.5
+            over_lean = (
+                "OVER" if prediction.expected_total_goals > ou_line + 0.3
+                else "UNDER" if prediction.expected_total_goals < ou_line - 0.3
+                else "lean even"
+            )
+            lines.append(
+                f"**Total goals market reference:** model {prediction.expected_total_goals:.1f} "
+                f"vs 5.5 line -> **{over_lean}**"
+            )
+
         lines.append("\n**Most Likely Scorers:**")
         for i, pred in enumerate(prediction.top_scorers[:10], 1):
             prob_pct = int(pred.prob_goal * 100)
             point_pct = int(pred.prob_point * 100)
+            multi_pct = int(pred.prob_multi_point * 100)
+            shots_str = f", {pred.expected_shots:.1f} expected SOG" if pred.expected_shots else ""
             lines.append(
                 f"{i}. **{pred.player_name}** ({pred.team}) - "
-                f"{prob_pct}% goal probability, {point_pct}% point probability"
+                f"{prob_pct}% goal, {point_pct}% point, {multi_pct}% 2+ points{shots_str}"
             )
             lines.append(f"   Expected: {pred.expected_goals:.2f}G, {pred.expected_assists:.2f}A, {pred.expected_points:.2f}P")
             if pred.factors:
                 lines.append(f"   _{' | '.join(pred.factors[:2])}_")
             lines.append(f"   Confidence: {pred.confidence} ({int(pred.confidence_score * 100)}%)")
+
+        # Top point-getters ranked - clean list for "player to record a point" picks
+        all_players = prediction.home_players + prediction.away_players
+        top_point = sorted(all_players, key=lambda p: p.prob_point, reverse=True)[:5]
+        if top_point:
+            lines.append("\n**Top Point-Probability Players (for 'player to record a point' legs):**")
+            for p in top_point:
+                lines.append(
+                    f"- {p.player_name} ({p.team}): {int(p.prob_point * 100)}% point probability "
+                    f"({p.expected_points:.2f} expected pts)"
+                )
+
+        # Top shooters ranked - clean list for "2+ SOG" legs
+        top_shooters = sorted(
+            all_players, key=lambda p: getattr(p, 'expected_shots', 0) or 0, reverse=True
+        )[:5]
+        if top_shooters and any((p.expected_shots or 0) > 0 for p in top_shooters):
+            lines.append("\n**Top Expected-Shots Players (for '2+ shots on goal' legs):**")
+            for p in top_shooters:
+                shots = p.expected_shots or 0
+                # P(>=2 shots) under a Poisson with mean = expected_shots
+                prob_2_plus = _poisson_at_least_two(shots) if shots > 0 else 0
+                lines.append(
+                    f"- {p.player_name} ({p.team}): {shots:.1f} expected SOG, "
+                    f"~{int(prob_2_plus * 100)}% chance of 2+ SOG"
+                )
 
         # Add team breakdowns
         lines.append(f"\n**{prediction.home_team} (Home) Key Players:**")
@@ -1648,7 +1814,10 @@ Examples:
             goalie_note = ""
             if pred.opponent_goalie:
                 goalie_note = f" (vs {pred.opponent_goalie})"
-            lines.append(f"- {pred.player_name}: {prob_pct}% goal, {pred.expected_points:.2f} expected points{goalie_note}")
+            lines.append(
+                f"- {pred.player_name}: {prob_pct}% goal, {pred.expected_points:.2f} expected pts, "
+                f"{pred.expected_shots:.1f} expected SOG{goalie_note}"
+            )
 
         lines.append(f"\n**{prediction.away_team} (Away) Key Players:**")
         for pred in prediction.away_players[:3]:
@@ -1656,7 +1825,10 @@ Examples:
             goalie_note = ""
             if pred.opponent_goalie:
                 goalie_note = f" (vs {pred.opponent_goalie})"
-            lines.append(f"- {pred.player_name}: {prob_pct}% goal, {pred.expected_points:.2f} expected points{goalie_note}")
+            lines.append(
+                f"- {pred.player_name}: {prob_pct}% goal, {pred.expected_points:.2f} expected pts, "
+                f"{pred.expected_shots:.1f} expected SOG{goalie_note}"
+            )
 
         return "\n".join(lines)
 
