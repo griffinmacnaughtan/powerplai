@@ -21,12 +21,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.src.db.database import async_session_maker
 from backend.src.ingestion.nhl_api import NHLAPIClient
+from backend.src.ingestion.scheduler import get_current_season_code
 
 logger = structlog.get_logger()
 
 # All NHL team abbreviations
 NHL_TEAMS = [
-    "ANA", "ARI", "BOS", "BUF", "CGY", "CAR", "CHI", "COL", "CBJ", "DAL",
+    "ANA", "BOS", "BUF", "CGY", "CAR", "CHI", "COL", "CBJ", "DAL",
     "DET", "EDM", "FLA", "LAK", "MIN", "MTL", "NSH", "NJD", "NYI", "NYR",
     "OTT", "PHI", "PIT", "SJS", "SEA", "STL", "TBL", "TOR", "UTA", "VAN",
     "VGK", "WSH", "WPG"
@@ -105,12 +106,13 @@ async def fetch_player_injury_details(
         return None
 
 
-async def ingest_injuries(db: AsyncSession, season: str = "20252026") -> dict:
+async def ingest_injuries(db: AsyncSession, season: str | None = None) -> dict:
     """
     Ingest injury information for all teams.
 
     Returns stats about injuries found.
     """
+    season = season or get_current_season_code()
     client = NHLAPIClient()
     stats = {"teams_checked": 0, "injuries_found": 0, "injuries_updated": 0}
 
@@ -303,12 +305,13 @@ async def get_active_injuries(db: AsyncSession, team_abbrev: str | None = None) 
     ]
 
 
-async def get_team_injury_impact(db: AsyncSession, team_abbrev: str, season: str = "20252026") -> dict:
+async def get_team_injury_impact(db: AsyncSession, team_abbrev: str, season: str | None = None) -> dict:
     """
     Calculate the impact of injuries on a team's lineup.
 
     Returns info about injured players and their stats impact.
     """
+    season = season or get_current_season_code()
     result = await db.execute(
         text("""
             SELECT
@@ -346,7 +349,8 @@ async def get_team_injury_impact(db: AsyncSession, team_abbrev: str, season: str
     }
 
 
-async def refresh_injuries(season: str = "20252026") -> dict:
+async def refresh_injuries(season: str | None = None) -> dict:
     """Refresh all injury data."""
+    season = season or get_current_season_code()
     async with async_session_maker() as db:
         return await ingest_injuries(db, season)

@@ -146,6 +146,30 @@ async def add_unique_constraints():
                 logger.warning("constraint_add_failed", constraint="game_logs_player_game_key", error=str(e))
 
 
+async def purge_preseason_games():
+    """
+    Remove preseason (gameType=1) games and their box scores.
+
+    Schedule ingestion used to store every game the NHL API returned,
+    including preseason. Those rows leaked into tonight's predictions,
+    parlays, and players' recent form. Ingestion now skips them; this
+    clears what was already stored. Idempotent and cheap once clean.
+    NHL game IDs encode the type: SSSSTTNNNN, so TT = 01 is preseason.
+    """
+    async with engine.begin() as conn:
+        try:
+            logs = await conn.execute(text("""
+                DELETE FROM game_logs WHERE (game_id / 10000) % 100 = 1
+            """))
+            games = await conn.execute(text("""
+                DELETE FROM games WHERE game_type = 1
+            """))
+            if logs.rowcount or games.rowcount:
+                logger.info("purged_preseason_games", games=games.rowcount, game_logs=logs.rowcount)
+        except Exception as e:
+            logger.warning("purge_preseason_failed", error=str(e))
+
+
 async def run_migrations():
     """Run all pending migrations."""
     logger.info("running_database_migrations")
@@ -159,6 +183,8 @@ async def run_migrations():
 
     # Add unique constraints for upserts
     await add_unique_constraints()
+
+    await purge_preseason_games()
 
     logger.info("database_migrations_complete")
 

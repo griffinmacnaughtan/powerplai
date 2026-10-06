@@ -3232,6 +3232,82 @@ async def trigger_playoff_picks_validate(
 
 
 # -------------------------------------------------------------------------
+# ESPN Fantasy
+# -------------------------------------------------------------------------
+# User-agnostic: any visitor can pass their own league_id. Private leagues
+# send the user's ESPN cookies in X-ESPN-S2 / X-ESPN-SWID headers - used for
+# that one request, never stored or logged, never accepted in the URL. The
+# server's own ESPN_S2/ESPN_SWID are only used for ESPN_LEAGUE_ID.
+
+
+def _espn_credentials(request: Request) -> tuple[str, str] | None:
+    s2 = request.headers.get("x-espn-s2", "").strip()
+    swid = request.headers.get("x-espn-swid", "").strip()
+    return (s2, swid) if s2 and swid else None
+
+
+def _espn_error(e: Exception) -> HTTPException:
+    from backend.src.agents.fantasy_espn import ESPNFantasyError
+    if isinstance(e, ESPNFantasyError):
+        return HTTPException(status_code=e.status_code, detail=str(e))
+    logger.error("espn_fantasy_failed", error=str(e))
+    return HTTPException(status_code=502, detail="ESPN fantasy request failed")
+
+
+@app.get("/api/fantasy/espn/league")
+@limiter.limit("20/minute")
+async def espn_league(request: Request, league_id: int | None = None, year: int | None = None):
+    """League settings, scoring, and teams (use this to find your team_id)."""
+    from backend.src.agents.fantasy_espn import get_league_summary
+    try:
+        return await get_league_summary(league_id, year, _espn_credentials(request))
+    except Exception as e:
+        raise _espn_error(e)
+
+
+@app.get("/api/fantasy/espn/lineup")
+@limiter.limit("20/minute")
+async def espn_lineup(
+    request: Request,
+    team_id: int,
+    league_id: int | None = None,
+    game_date: date | None = None,
+    year: int | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Start/sit: optimal lineup for a date under your league's scoring."""
+    from backend.src.agents.fantasy_espn import get_lineup_recommendation
+    try:
+        return await get_lineup_recommendation(
+            db, team_id, league_id, game_date, year, _espn_credentials(request)
+        )
+    except Exception as e:
+        raise _espn_error(e)
+
+
+@app.get("/api/fantasy/espn/waivers")
+@limiter.limit("10/minute")
+async def espn_waivers(
+    request: Request,
+    team_id: int,
+    league_id: int | None = None,
+    days: int = 7,
+    limit: int = 10,
+    year: int | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Free-agent pickups ranked by expected points over the next `days`, with a drop candidate."""
+    from backend.src.agents.fantasy_espn import get_waiver_recommendations
+    try:
+        return await get_waiver_recommendations(
+            db, team_id, league_id, days=max(1, min(days, 14)), limit=max(1, min(limit, 25)), year=year,
+            credentials=_espn_credentials(request),
+        )
+    except Exception as e:
+        raise _espn_error(e)
+
+
+# -------------------------------------------------------------------------
 # Debug endpoints (disable in production)
 # -------------------------------------------------------------------------
 

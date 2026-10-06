@@ -70,6 +70,17 @@ MIN_GAMES_RECENT = 3
 MIN_GAMES_SEASON = 10
 MIN_GAMES_H2H = 3
 
+# Weight (in games) given to last season's per-game rates when building the
+# season baseline. Shrinks to zero once a player has this many games played.
+SEASON_PRIOR_GAMES = 20
+
+# Game logs older than this don't count toward "recent form".
+RECENT_FORM_MAX_AGE_DAYS = 45
+
+# Points of weight given to the season goal share when splitting expected
+# points into goals vs assists.
+GOAL_RATIO_PRIOR_POINTS = 10
+
 # League averages for normalization. These are FALLBACKS only - the
 # prediction engine reads the active values from
 # backend.src.agents.league_context at runtime so they stay current
@@ -316,7 +327,7 @@ class PredictionEngine:
         # Find player
         result = await db.execute(
             text("""
-                SELECT p.id, p.name, s.team_abbrev
+                SELECT p.id, p.name, COALESCE(p.team_abbrev, s.team_abbrev) AS team_abbrev
                 FROM players p
                 JOIN player_season_stats s ON p.id = s.player_id
                 WHERE p.name ILIKE :name
@@ -389,13 +400,9 @@ class PredictionEngine:
         try:
             from backend.src.ingestion.team_goalie_stats import get_matchup_context as fetch_context
 
-            # Get current season
-            season_result = await db.execute(
-                text("SELECT MAX(season) FROM player_season_stats")
-            )
-            current_season = season_result.scalar() or "20252026"
+            from backend.src.ingestion.scheduler import get_current_season_code
 
-            context = await fetch_context(db, home_team, away_team, current_season)
+            context = await fetch_context(db, home_team, away_team, get_current_season_code())
             return {
                 "home_goalie": context.get("home_team", {}).get("goalie"),
                 "away_goalie": context.get("away_team", {}).get("goalie"),
@@ -427,24 +434,53 @@ class PredictionEngine:
         matchup_context: dict | None = None,
         is_playoff: bool = False,
     ) -> list[PlayerPrediction]:
-        """Get predictions for top players on a team."""
-        # Get current season
-        season_result = await db.execute(
-            text("SELECT MAX(season) FROM player_season_stats")
-        )
-        current_season = season_result.scalar()
+        """
+        Get predictions for top players on a team.
 
-        # Get top players by points for this team
+        Uses players.team_abbrev (kept current by roster sync) rather than
+        the team on a season-stats row, so off-season trades and signings
+        land on the right side of the matchup on opening night. Players are
+        ranked by production blended across this season and last, so a
+        2-game sample doesn't decide who the "top" players are.
+        """
+        from backend.src.ingestion.scheduler import get_current_season_code
+
+        current_season = get_current_season_code()
+        prior_season = self._prior_season(current_season)
+
         result = await db.execute(
             text("""
-                SELECT p.id, p.name, s.team_abbrev, s.points, s.games_played
+                SELECT p.id, p.name, p.team_abbrev,
+                       COALESCE(cur.points, 0) AS points,
+                       COALESCE(cur.games_played, 0) AS games_played
                 FROM players p
-                JOIN player_season_stats s ON p.id = s.player_id
-                WHERE s.team_abbrev = :team AND s.season = :season
-                ORDER BY s.points DESC
+                LEFT JOIN player_season_stats cur
+                  ON cur.player_id = p.id AND cur.season = :season
+                LEFT JOIN player_season_stats pri
+                  ON pri.player_id = p.id AND pri.season = :prior_season
+                WHERE p.team_abbrev = :team
+                  AND COALESCE(p.position, '') <> 'G'
+                  AND (cur.player_id IS NOT NULL OR pri.player_id IS NOT NULL)
+                  -- Skip players who won't dress. Day-to-Day stays in:
+                  -- they usually play and the status is often stale.
+                  AND NOT EXISTS (
+                      SELECT 1 FROM injuries i
+                      WHERE i.player_id = p.id AND i.is_active
+                        AND i.status IN ('IR', 'LTIR', 'Out', 'Suspended')
+                  )
+                ORDER BY
+                    (COALESCE(cur.points, 0) + COALESCE(pri.points, 0)::float
+                        * :prior_games / GREATEST(COALESCE(pri.games_played, 0), 1))
+                    / (COALESCE(cur.games_played, 0) + :prior_games) DESC
                 LIMIT :limit
             """),
-            {"team": team, "season": current_season, "limit": limit}
+            {
+                "team": team,
+                "season": current_season,
+                "prior_season": prior_season,
+                "prior_games": SEASON_PRIOR_GAMES,
+                "limit": limit,
+            }
         )
 
         predictions = []
@@ -493,15 +529,22 @@ class PredictionEngine:
         recent = await self._get_recent_form(db, player_id, game_date, n_games=5)
         recent_form_ppg = recent["ppg"] if recent["games"] >= MIN_GAMES_RECENT else None
 
-        if recent_form_ppg is not None:
-            if recent_form_ppg > recent.get("season_ppg", 0) * 1.2:
-                factors.append(f"Hot streak: {recent_form_ppg:.2f} PPG in last {recent['games']} games")
-            elif recent_form_ppg < recent.get("season_ppg", 0) * 0.8:
-                factors.append(f"Cold streak: {recent_form_ppg:.2f} PPG in last {recent['games']} games")
-
         # 2. Get season baseline
         season = await self._get_season_stats(db, player_id)
         season_avg_ppg = season["ppg"] if season["games"] >= MIN_GAMES_SEASON else None
+
+        # Hot/cold is relative to the player's own baseline. (This used to
+        # read a "season_ppg" key _get_recent_form never set, so it compared
+        # against 0 and flagged every productive player as a hot streak.)
+        if recent_form_ppg is not None and season_avg_ppg:
+            if recent_form_ppg > season_avg_ppg * 1.2:
+                factors.append(f"Hot streak: {recent_form_ppg:.2f} PPG in last {recent['games']} games")
+            elif recent_form_ppg < season_avg_ppg * 0.8:
+                factors.append(f"Cold streak: {recent_form_ppg:.2f} PPG in last {recent['games']} games")
+        if season.get("blended_with_prior"):
+            factors.append(
+                f"Early season: baseline blends {season.get('current_games', 0)} GP this year with last season"
+            )
 
         # 3. Get head-to-head history
         h2h = await self._get_h2h_stats(db, player_id, opponent)
@@ -629,7 +672,16 @@ class PredictionEngine:
         expected_points = max(0.0, expected_points)
 
         # Calculate expected goals/assists (typically ~40% goals, 60% assists for forwards)
-        goal_ratio = recent.get("goal_ratio", 0.4) if recent["games"] > 0 else 0.4
+        # The player's own goal share from the season baseline, nudged by
+        # recent games. Using the last ~5 games alone swung to 100% goals
+        # (zero expected assists) whenever a player's recent points were
+        # all goals.
+        season_ratio = season["gpg"] / season["ppg"] if season.get("ppg") else 0.4
+        recent_points = recent.get("ppg", 0) * recent.get("games", 0)
+        recent_goals = recent.get("gpg", 0) * recent.get("games", 0)
+        goal_ratio = (recent_goals + season_ratio * GOAL_RATIO_PRIOR_POINTS) / (
+            recent_points + GOAL_RATIO_PRIOR_POINTS
+        )
         expected_goals = expected_points * goal_ratio
         expected_assists = expected_points * (1 - goal_ratio)
 
@@ -650,7 +702,7 @@ class PredictionEngine:
         prob_point = calibration.calibrate_prob(prob_point, "point")
 
         # Calculate confidence from prediction strength + data quality
-        games_analyzed = (recent.get("games", 0) + season.get("games", 0) + h2h.get("games", 0))
+        games_analyzed = (recent.get("games", 0) + season.get("current_games", season.get("games", 0)) + h2h.get("games", 0))
         data_quality = min(1.0, games_analyzed / 50)
 
         # Confidence reflects how strong the prediction signal is:
@@ -721,11 +773,20 @@ class PredictionEngine:
                     FROM game_logs
                     WHERE player_id = :player_id
                       AND game_date < :before_date
+                      AND game_date >= :since
                     ORDER BY game_date DESC
                     LIMIT :n_games
                 ) recent_games
             """),
-            {"player_id": player_id, "before_date": before_date, "n_games": n_games}
+            {
+                "player_id": player_id,
+                "before_date": before_date,
+                # Last April's games aren't "recent form" in October, and a
+                # player back from a long injury hasn't got a form signal yet.
+                # Outside this window the season baseline carries the weight.
+                "since": before_date - timedelta(days=RECENT_FORM_MAX_AGE_DAYS),
+                "n_games": n_games,
+            }
         )
         row = result.fetchone()
 
@@ -744,28 +805,74 @@ class PredictionEngine:
             "goal_ratio": float(goals) / float(points) if points > 0 else 0.4,
         }
 
+    @staticmethod
+    def _prior_season(season_code: str) -> str:
+        start = int(season_code[:4]) - 1
+        return f"{start}{start + 1}"
+
     async def _get_season_stats(self, db: AsyncSession, player_id: int) -> dict:
-        """Get player's season statistics."""
+        """
+        Get player's season baseline.
+
+        Early in the season the current sample is tiny, so rates are shrunk
+        toward last season's per-game rates (weighted as SEASON_PRIOR_GAMES
+        games). By ~mid-November the current season dominates. Rookies with
+        no prior season just use what they have.
+
+        `games` reports the effective sample (current + prior weight) so the
+        MIN_GAMES_SEASON gate doesn't drop the baseline on opening night.
+        """
+        from backend.src.ingestion.scheduler import get_current_season_code
+
+        current_season = get_current_season_code()
+        prior_season = self._prior_season(current_season)
         result = await db.execute(
             text("""
-                SELECT games_played, goals, assists, points, xg
+                SELECT season, games_played, goals, assists, points, xg
                 FROM player_season_stats
                 WHERE player_id = :player_id
-                ORDER BY season DESC
-                LIMIT 1
+                  AND season IN (:season, :prior_season)
             """),
-            {"player_id": player_id}
+            {"player_id": player_id, "season": current_season, "prior_season": prior_season}
         )
-        row = result.fetchone()
+        rows = {r.season: r for r in result.fetchall()}
+        cur = rows.get(current_season)
+        pri = rows.get(prior_season)
 
-        if not row or not row.games_played:
+        if not cur and not pri:
+            # Fall back to the most recent season on file (e.g. a player
+            # returning from a lost season).
+            result = await db.execute(
+                text("""
+                    SELECT season, games_played, goals, assists, points, xg
+                    FROM player_season_stats
+                    WHERE player_id = :player_id
+                    ORDER BY season DESC
+                    LIMIT 1
+                """),
+                {"player_id": player_id}
+            )
+            pri = result.fetchone()
+
+        cur_gp = (cur.games_played or 0) if cur else 0
+        pri_gp = (pri.games_played or 0) if pri else 0
+        prior_weight = max(0, SEASON_PRIOR_GAMES - cur_gp) if pri_gp > 0 else 0
+
+        if cur_gp == 0 and prior_weight == 0:
             return {"games": 0, "ppg": 0, "gpg": 0, "xg_per_game": 0}
 
+        def rate(attr: str) -> float:
+            cur_total = float(getattr(cur, attr) or 0) if cur else 0.0
+            pri_rate = float(getattr(pri, attr) or 0) / pri_gp if pri_gp else 0.0
+            return (cur_total + pri_rate * prior_weight) / (cur_gp + prior_weight)
+
         return {
-            "games": row.games_played,
-            "ppg": float(row.points) / row.games_played if row.games_played > 0 else 0.0,
-            "gpg": float(row.goals) / row.games_played if row.games_played > 0 else 0.0,
-            "xg_per_game": float(row.xg) / row.games_played if row.xg and row.games_played > 0 else 0.0,
+            "games": cur_gp + prior_weight,
+            "current_games": cur_gp,
+            "ppg": rate("points"),
+            "gpg": rate("goals"),
+            "xg_per_game": rate("xg"),
+            "blended_with_prior": prior_weight > 0,
         }
 
     async def _get_h2h_stats(

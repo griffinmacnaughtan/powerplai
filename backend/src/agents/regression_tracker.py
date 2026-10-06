@@ -21,6 +21,8 @@ from typing import Optional
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.src.ingestion.scheduler import get_current_season_code
+
 logger = structlog.get_logger()
 
 
@@ -163,7 +165,7 @@ class RegressionTracker:
             result = await self.db.execute(
                 text("SELECT MAX(season) FROM player_season_stats")
             )
-            season = result.scalar() or "20252026"
+            season = result.scalar() or get_current_season_code()
 
         min_gp = min_games or self.MIN_GAMES
 
@@ -332,7 +334,7 @@ class RegressionTracker:
             result = await self.db.execute(
                 text("SELECT MAX(season) FROM player_season_stats")
             )
-            season = result.scalar() or "20252026"
+            season = result.scalar() or get_current_season_code()
 
         result = await self.db.execute(
             text("""

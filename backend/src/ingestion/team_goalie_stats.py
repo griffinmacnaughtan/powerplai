@@ -18,6 +18,7 @@ import httpx
 
 from backend.src.db.database import async_session_maker
 from backend.src.config import get_settings
+from backend.src.ingestion.scheduler import get_current_season_code
 
 logger = structlog.get_logger()
 settings = get_settings()
@@ -25,8 +26,9 @@ settings = get_settings()
 NHL_STATS_API = "https://api.nhle.com/stats/rest/en"
 
 
-async def fetch_goalie_stats(season: str = "20252026") -> list[dict]:
+async def fetch_goalie_stats(season: str | None = None) -> list[dict]:
     """Fetch all goalie stats from NHL Stats API."""
+    season = season or get_current_season_code()
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.get(
             f"{NHL_STATS_API}/goalie/summary",
@@ -42,8 +44,9 @@ async def fetch_goalie_stats(season: str = "20252026") -> list[dict]:
         return data.get("data", [])
 
 
-async def fetch_team_stats(season: str = "20252026") -> list[dict]:
+async def fetch_team_stats(season: str | None = None) -> list[dict]:
     """Fetch all team stats from NHL Stats API."""
+    season = season or get_current_season_code()
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.get(
             f"{NHL_STATS_API}/team/summary",
@@ -57,12 +60,13 @@ async def fetch_team_stats(season: str = "20252026") -> list[dict]:
         return data.get("data", [])
 
 
-async def ingest_goalie_stats(db: AsyncSession, season: str = "20252026") -> int:
+async def ingest_goalie_stats(db: AsyncSession, season: str | None = None) -> int:
     """
     Ingest goalie statistics for the season.
 
     Returns number of goalies upserted.
     """
+    season = season or get_current_season_code()
     goalies = await fetch_goalie_stats(season)
     count = 0
 
@@ -166,12 +170,13 @@ async def ingest_goalie_stats(db: AsyncSession, season: str = "20252026") -> int
     return count
 
 
-async def ingest_team_stats(db: AsyncSession, season: str = "20252026") -> int:
+async def ingest_team_stats(db: AsyncSession, season: str | None = None) -> int:
     """
     Ingest team statistics for the season.
 
     Returns number of teams upserted.
     """
+    season = season or get_current_season_code()
     teams = await fetch_team_stats(season)
     count = 0
 
@@ -189,6 +194,7 @@ async def ingest_team_stats(db: AsyncSession, season: str = "20252026") -> int:
         "Columbus Blue Jackets": "CBJ", "Minnesota Wild": "MIN", "Winnipeg Jets": "WPG",
         "Arizona Coyotes": "ARI", "Vegas Golden Knights": "VGK", "Seattle Kraken": "SEA",
         "Utah Hockey Club": "UTA",
+        "Utah Mammoth": "UTA",
     }
 
     for t in teams:
@@ -259,11 +265,28 @@ async def ingest_team_stats(db: AsyncSession, season: str = "20252026") -> int:
     return count
 
 
-async def get_team_pace(db: AsyncSession, team_abbrev: str, season: str = "20252026") -> dict | None:
-    """Get team pace/strength metrics."""
+# Early in a season a team's 2-3 games of data is mostly noise. Shrink
+# current-season rates toward last season until this many games are in.
+TEAM_PRIOR_GAMES = 15
+GOALIE_PRIOR_STARTS = 8
+
+
+def _prior_season_code(season: str) -> str:
+    start = int(season[:4]) - 1
+    return f"{start}{start + 1}"
+
+
+def _blend(current: float, current_n: int, prior: float | None, prior_n: int) -> float:
+    if prior is None or prior_n <= 0:
+        return current
+    return (current * current_n + prior * prior_n) / (current_n + prior_n)
+
+
+async def _fetch_team_pace_row(db: AsyncSession, team_abbrev: str, season: str):
     result = await db.execute(
         text("""
             SELECT
+                games_played,
                 goals_for_per_game, goals_against_per_game, total_goals_per_game,
                 shots_for_per_game, shots_against_per_game,
                 power_play_pct, penalty_kill_pct
@@ -272,48 +295,107 @@ async def get_team_pace(db: AsyncSession, team_abbrev: str, season: str = "20252
         """),
         {"team": team_abbrev, "season": season}
     )
-    row = result.fetchone()
-    if not row:
+    return result.fetchone()
+
+
+async def get_team_pace(db: AsyncSession, team_abbrev: str, season: str | None = None) -> dict | None:
+    """
+    Get team pace/strength metrics.
+
+    Blends toward last season while the current sample is small, so the
+    first weeks of October don't swing on a single 7-1 game.
+    """
+    season = season or get_current_season_code()
+    row = await _fetch_team_pace_row(db, team_abbrev, season)
+    current_gp = (row.games_played or 0) if row else 0
+
+    prior = None
+    prior_weight = 0
+    if current_gp < TEAM_PRIOR_GAMES:
+        prior = await _fetch_team_pace_row(db, team_abbrev, _prior_season_code(season))
+        if prior:
+            prior_weight = TEAM_PRIOR_GAMES - current_gp
+
+    if not row and not prior:
         return None
 
+    def field(name: str) -> float:
+        cur = float(getattr(row, name) or 0) if row else 0.0
+        pri = float(getattr(prior, name) or 0) if prior else None
+        return _blend(cur, current_gp, pri, prior_weight)
+
     return {
-        "goals_for_pg": float(row.goals_for_per_game) if row.goals_for_per_game else 0,
-        "goals_against_pg": float(row.goals_against_per_game) if row.goals_against_per_game else 0,
-        "total_goals_pg": float(row.total_goals_per_game) if row.total_goals_per_game else 0,
-        "shots_for_pg": float(row.shots_for_per_game) if row.shots_for_per_game else 0,
-        "shots_against_pg": float(row.shots_against_per_game) if row.shots_against_per_game else 0,
-        "pp_pct": float(row.power_play_pct) if row.power_play_pct else 0,
-        "pk_pct": float(row.penalty_kill_pct) if row.penalty_kill_pct else 0,
+        "goals_for_pg": field("goals_for_per_game"),
+        "goals_against_pg": field("goals_against_per_game"),
+        "total_goals_pg": field("total_goals_per_game"),
+        "shots_for_pg": field("shots_for_per_game"),
+        "shots_against_pg": field("shots_against_per_game"),
+        "pp_pct": field("power_play_pct"),
+        "pk_pct": field("penalty_kill_pct"),
+        "games_played": current_gp,
+        "blended_with_prior": prior_weight > 0,
     }
 
 
-async def get_goalie_stats(db: AsyncSession, team_abbrev: str, season: str = "20252026") -> dict | None:
-    """Get the starting goalie stats for a team (goalie with most starts)."""
+async def get_goalie_stats(db: AsyncSession, team_abbrev: str, season: str | None = None) -> dict | None:
+    """
+    Get the likely starting goalie for a team.
+
+    Mid-season: the goalie with the most starts this season. Early season
+    (or after an off-season move) that's unreliable, so we also consider
+    goalies currently rostered on the team (players.team_abbrev, kept fresh
+    by roster sync) using their prior-season workload, and shrink save% /
+    GAA toward the prior season until GOALIE_PRIOR_STARTS starts.
+    """
+    season = season or get_current_season_code()
+    prior_season = _prior_season_code(season)
     result = await db.execute(
         text("""
             SELECT
-                p.name, gs.save_pct, gs.goals_against_avg,
-                gs.games_started, gs.wins, gs.losses, gs.shutouts
-            FROM goalie_stats gs
-            JOIN players p ON gs.player_id = p.id
-            WHERE gs.team_abbrev = :team AND gs.season = :season
-            ORDER BY gs.games_started DESC
+                p.id, p.name,
+                cur.save_pct, cur.goals_against_avg,
+                COALESCE(cur.games_started, 0) AS games_started,
+                cur.wins, cur.losses, cur.shutouts,
+                pri.save_pct AS prior_save_pct,
+                pri.goals_against_avg AS prior_gaa,
+                COALESCE(pri.games_started, 0) AS prior_games_started
+            FROM players p
+            LEFT JOIN goalie_stats cur
+              ON cur.player_id = p.id AND cur.season = :season
+            LEFT JOIN goalie_stats pri
+              ON pri.player_id = p.id AND pri.season = :prior_season
+            WHERE (cur.team_abbrev = :team)
+               OR (p.team_abbrev = :team AND p.position = 'G')
+            ORDER BY COALESCE(cur.games_started, 0) * 4
+                     + COALESCE(pri.games_started, 0) DESC
             LIMIT 1
         """),
-        {"team": team_abbrev, "season": season}
+        {"team": team_abbrev, "season": season, "prior_season": prior_season}
     )
     row = result.fetchone()
     if not row:
         return None
 
+    starts = row.games_started or 0
+    prior_weight = max(0, GOALIE_PRIOR_STARTS - starts) if row.prior_save_pct else 0
+    cur_sv = float(row.save_pct) if row.save_pct else 0.900
+    cur_gaa = float(row.goals_against_avg) if row.goals_against_avg else 3.0
+    if starts == 0 and row.prior_save_pct:
+        save_pct = float(row.prior_save_pct)
+        gaa = float(row.prior_gaa) if row.prior_gaa else 3.0
+    else:
+        save_pct = _blend(cur_sv, starts, float(row.prior_save_pct) if row.prior_save_pct else None, prior_weight)
+        gaa = _blend(cur_gaa, starts, float(row.prior_gaa) if row.prior_gaa else None, prior_weight)
+
     return {
         "name": row.name,
-        "save_pct": float(row.save_pct) if row.save_pct else 0.900,
-        "gaa": float(row.goals_against_avg) if row.goals_against_avg else 3.0,
-        "games_started": row.games_started,
-        "wins": row.wins,
-        "losses": row.losses,
-        "shutouts": row.shutouts,
+        "save_pct": round(save_pct, 4),
+        "gaa": round(gaa, 2),
+        "games_started": starts,
+        "wins": row.wins or 0,
+        "losses": row.losses or 0,
+        "shutouts": row.shutouts or 0,
+        "blended_with_prior": prior_weight > 0,
     }
 
 
@@ -321,11 +403,12 @@ async def get_matchup_context(
     db: AsyncSession,
     home_team: str,
     away_team: str,
-    season: str = "20252026"
+    season: str | None = None
 ) -> dict:
     """
     Get full matchup context including team pace and goalie matchups.
     """
+    season = season or get_current_season_code()
     home_pace = await get_team_pace(db, home_team, season)
     away_pace = await get_team_pace(db, away_team, season)
     home_goalie = await get_goalie_stats(db, home_team, season)
@@ -360,8 +443,9 @@ async def get_matchup_context(
     }
 
 
-async def refresh_all_stats(season: str = "20252026") -> dict:
+async def refresh_all_stats(season: str | None = None) -> dict:
     """Refresh all team and goalie stats."""
+    season = season or get_current_season_code()
     async with async_session_maker() as db:
         goalies = await ingest_goalie_stats(db, season)
         teams = await ingest_team_stats(db, season)

@@ -25,7 +25,7 @@ RUN pip install --no-cache-dir \
     asyncpg>=0.29.0 \
     alembic>=1.13.0 \
     pgvector>=0.2.4 \
-    anthropic>=0.40.0 \
+    "anthropic>=1.0,<2" \
     python-dotenv>=1.0.0 \
     structlog>=24.1.0 \
     tenacity>=8.2.0 \

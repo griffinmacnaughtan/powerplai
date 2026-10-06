@@ -19,6 +19,9 @@ from backend.src.ingestion.nhl_api import NHLAPIClient, _parse_toi
 
 logger = structlog.get_logger()
 
+# NHL gameType codes we treat as real games: 2 = regular season, 3 = playoffs.
+NHL_COUNTED_GAME_TYPES: tuple[int, ...] = (2, 3)
+
 
 def parse_game_from_schedule(game_data: dict[str, Any], season: str, day_date: str | None = None) -> dict[str, Any]:
     """Transform NHL API schedule game to our schema."""
@@ -129,6 +132,13 @@ async def ingest_schedule_for_date(
             day_date = day_data.get("date")  # e.g., "2026-02-01"
             games = day_data.get("games", [])
             for game_data in games:
+                # Only regular season (2) and playoffs (3). Preseason (1)
+                # games ice half-AHL lineups - ingesting them pollutes
+                # recent form and gets them predicted / parlayed in late
+                # September and early October.
+                if game_data.get("gameType", 2) not in NHL_COUNTED_GAME_TYPES:
+                    continue
+
                 season = str(game_data.get("season", ""))
                 game = parse_game_from_schedule(game_data, season, day_date)
 
@@ -174,7 +184,7 @@ async def ingest_team_season_schedule(
     team_abbrev: str,
     season: str,
     client: NHLAPIClient | None = None,
-    game_types: tuple[int, ...] = (2, 3),
+    game_types: tuple[int, ...] = NHL_COUNTED_GAME_TYPES,
 ) -> int:
     """
     Backfill a team's full season schedule (regular + playoffs by default).

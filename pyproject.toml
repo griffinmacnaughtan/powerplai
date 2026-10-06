@@ -23,7 +23,7 @@ dependencies = [
     "pgvector>=0.2.4",
 
     # LLM & RAG
-    "anthropic>=0.40.0",
+    "anthropic>=1.0,<2",
     "chromadb>=0.4.22",
     "sentence-transformers>=2.3.0",
 

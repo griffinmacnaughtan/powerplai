@@ -16,6 +16,7 @@ import anthropic
 import structlog
 
 from backend.src.config import get_settings
+from backend.src.agents.copilot import response_text
 
 logger = structlog.get_logger()
 settings = get_settings()
@@ -65,8 +66,9 @@ class EvalMetrics:
 
         # Use Claude to extract stats from response
         extraction = self.client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=500,
+            model=settings.anthropic_model,
+            max_tokens=4000,
+            output_config={"effort": "low"},
             messages=[{
                 "role": "user",
                 "content": f"""Extract any hockey statistics mentioned in this response as JSON.
@@ -81,7 +83,7 @@ Return JSON only: {{"stats": [{{"player": "name", "stat": "goals", "value": 10}}
         try:
             if not extraction.content or len(extraction.content) == 0:
                 return 0.5, ["Empty response from extraction model"]
-            extracted = json.loads(extraction.content[0].text)
+            extracted = json.loads(response_text(extraction))
             mentioned_stats = extracted.get("stats", [])
         except (json.JSONDecodeError, AttributeError, IndexError):
             return 0.5, ["Could not parse extracted stats"]
@@ -134,8 +136,9 @@ Return JSON only: {{"stats": [{{"player": "name", "stat": "goals", "value": 10}}
         Criteria: helpful, accurate, well-structured, cites sources.
         """
         judgment = self.client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=200,
+            model=settings.anthropic_model,
+            max_tokens=2000,
+            output_config={"effort": "low"},
             messages=[{
                 "role": "user",
                 "content": f"""Rate this hockey analytics response on a scale of 1-10.
@@ -156,7 +159,7 @@ Return only a JSON object: {{"score": 7, "reason": "brief explanation"}}"""
         try:
             if not judgment.content or len(judgment.content) == 0:
                 return 0.5
-            result = json.loads(judgment.content[0].text)
+            result = json.loads(response_text(judgment))
             score = result.get("score")
             return (score if score is not None else 5) / 10
         except (json.JSONDecodeError, AttributeError, IndexError):

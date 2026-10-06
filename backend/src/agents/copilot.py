@@ -14,9 +14,20 @@ import json
 
 from backend.src.config import get_settings
 from backend.src.agents.rag import rag_service
+from backend.src.ingestion.scheduler import get_season_label
 
 logger = structlog.get_logger()
 settings = get_settings()
+
+
+def response_text(message) -> str:
+    """
+    Concatenate a response's text blocks.
+
+    Sonnet 5.5 thinks adaptively, so content can start with a `thinking`
+    block - never assume content[0] is text.
+    """
+    return "".join(b.text for b in (message.content or []) if getattr(b, "type", None) == "text")
 
 
 def _poisson_at_least_two(mean: float) -> float:
@@ -494,8 +505,11 @@ class PowerplAICopilot:
     async def _classify_query(self, query: str) -> dict:
         """Use Claude to classify the query and extract entities."""
         message = self.client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=500,
+            model=settings.anthropic_model,
+            # Thinking counts toward max_tokens on Sonnet 5.5; low effort
+            # skips it on most simple classifications.
+            max_tokens=4000,
+            output_config={"effort": "low"},
             messages=[
                 {
                     "role": "user",
@@ -629,12 +643,11 @@ Examples:
         )
 
         try:
-            # Safely access message content
-            if not message.content or len(message.content) == 0:
-                logger.warning("empty_message_content")
+            text = response_text(message)
+            if not text:
+                logger.warning("empty_message_content", stop_reason=message.stop_reason)
                 return {"type": "unknown", "players": [], "teams": [], "stats": []}
 
-            text = message.content[0].text
             # Try to extract JSON from markdown code blocks if present
             if "```" in text:
                 import re
@@ -646,8 +659,7 @@ Examples:
             # Safely log without re-accessing potentially problematic content
             raw_preview = ""
             try:
-                if message.content and len(message.content) > 0:
-                    raw_preview = str(message.content[0].text)[:200]
+                raw_preview = response_text(message)[:200]
             except Exception:
                 raw_preview = "could not extract"
             logger.warning("classification_parse_error", error=str(e), raw_text=raw_preview)
@@ -2199,7 +2211,7 @@ Examples:
         xg = row.xg if row.xg else row.goals  # Fallback if no xG
 
         lines.append(f"## {row.name} Value Bet Analysis\n")
-        lines.append(f"**NHL 2025-26 Stats:** {row.goals}G, {row.assists}A, {row.points}P in {row.games_played} GP ({row.team_abbrev})")
+        lines.append(f"**NHL {get_season_label()} Stats:** {row.goals}G, {row.assists}A, {row.points}P in {row.games_played} GP ({row.team_abbrev})")
         lines.append(f"- Goals per game: **{nhl_gpg:.3f}** ({nhl_gpg*82:.0f} goal pace)")
         lines.append(f"- xG: {xg:.1f} (Actual vs xG: {row.goals - xg:+.1f})")
         lines.append("")
@@ -2669,7 +2681,7 @@ Examples:
                         )
                         row = result.fetchone()
                         if row:
-                            lines.append(f"- NHL Stats (2025-26): {row.goals}G, {row.assists}A, {row.points}P in {row.games_played} GP ({row.team_abbrev})")
+                            lines.append(f"- NHL Stats ({get_season_label()}): {row.goals}G, {row.assists}A, {row.points}P in {row.games_played} GP ({row.team_abbrev})")
                         lines.append("")
                         break
 
@@ -3235,18 +3247,26 @@ Sources:
             messages.append({"role": "user", "content": user_text})
 
         message = self.client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=1500,
+            model=settings.anthropic_model,
+            # Room for adaptive thinking plus a ~1500-token answer.
+            max_tokens=8000,
+            output_config={"effort": "low"},
             system=SYSTEM_PROMPT,
             messages=messages,
         )
 
-        # Safely access response content
-        if not message.content or len(message.content) == 0:
-            logger.error("empty_response_content")
-            return "I apologize, but I wasn't able to generate a response. Please try again."
+        if message.stop_reason == "refusal":
+            logger.warning(
+                "copilot_refusal",
+                category=getattr(message.stop_details, "category", None) if message.stop_details else None,
+            )
+            return "I can't help with that one. Try asking about stats, matchups, or fantasy decisions."
 
-        return message.content[0].text
+        text = response_text(message)
+        if not text:
+            logger.error("empty_response_content", stop_reason=message.stop_reason)
+            return "I apologize, but I wasn't able to generate a response. Please try again."
+        return text
 
 
 # Singleton instance

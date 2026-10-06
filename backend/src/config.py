@@ -8,6 +8,11 @@ class Settings(BaseSettings):
 
     # Anthropic
     anthropic_api_key: str = ""
+    anthropic_model: str = "claude-sonnet-5-5"
+
+    # The Odds API (read via os.getenv in odds_value.py; declared here so a
+    # .env that sets it - as .env.example suggests - doesn't fail validation)
+    odds_api_key: str = ""
 
     # ChromaDB
     chroma_host: str = "localhost"
@@ -21,6 +26,13 @@ class Settings(BaseSettings):
     debug: bool = True
     log_level: str = "INFO"
     auto_update_enabled: bool = True  # Auto-update current season data on startup
+
+    # ESPN Fantasy (unofficial API). League ID can also be passed per request.
+    # Private leagues need the espn_s2 and SWID cookies from a logged-in
+    # browser session on fantasy.espn.com. Treat both as secrets.
+    espn_league_id: int | None = None
+    espn_s2: str = ""
+    espn_swid: str = ""
 
     class Config:
         env_file = ".env"

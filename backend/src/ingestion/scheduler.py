@@ -19,7 +19,19 @@ settings = get_settings()
 
 # MoneyPuck data availability (xG tracking era)
 MONEYPUCK_FIRST_SEASON = 2007  # 2007-08 season
-CURRENT_SEASON = datetime.now().year if datetime.now().month >= 9 else datetime.now().year - 1
+
+
+def _season_start_year(today: date | None = None) -> int:
+    """NHL seasons roll over in September (training camp / preseason)."""
+    today = today or date.today()
+    return today.year if today.month >= 9 else today.year - 1
+
+
+# Import-time snapshot kept for default args in bulk-ingestion helpers.
+# Runtime code should call get_current_season(), which re-evaluates the date
+# so a server that stays up across the September rollover doesn't keep
+# serving last season.
+CURRENT_SEASON = _season_start_year()
 
 # Progress file for tracking ingestion state
 PROGRESS_FILE = Path("data/ingestion_progress.json")
@@ -117,5 +129,17 @@ class IngestionConfig:
 
 # Export current season for use elsewhere
 def get_current_season() -> str:
-    """Get the current NHL season year."""
-    return str(CURRENT_SEASON)
+    """Get the current NHL season start year, e.g. "2026" for 2026-27."""
+    return str(_season_start_year())
+
+
+def get_current_season_code() -> str:
+    """Current season in NHL API format, e.g. "20262027"."""
+    year = _season_start_year()
+    return f"{year}{year + 1}"
+
+
+def get_season_label(season_code: str | None = None) -> str:
+    """Human label for a season code, e.g. "20262027" -> "2026-27"."""
+    code = season_code or get_current_season_code()
+    return f"{code[:4]}-{code[6:8]}"
